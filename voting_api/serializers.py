@@ -88,6 +88,17 @@ class VoteSerializer(serializers.ModelSerializer):
         fields = ["id", "voter", "seat", "candidate", "voted_at"]
         read_only_fields = ["voter", "voted_at"]
 
+    def validate(self, attrs):
+        seat = attrs["seat"]
+        candidate = attrs["candidate"]
+
+        if candidate.seat_id != seat.id:
+            raise serializers.ValidationError(
+                {"candidate": "This candidate does not belong to the selected seat."}
+            )
+
+        return attrs
+
 
 class VoteResultSerializer(serializers.Serializer):
     """Read-only serializer for aggregated results."""

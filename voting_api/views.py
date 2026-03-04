@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from django.db.models import Q, Count
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -103,34 +104,35 @@ def candidates_for_seat(request, seat_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cast_vote(request):
-    """Cast a vote.  Expects { "seat": <id>, "candidate": <id> }."""
+    """Cast a vote.  Expects { "seat": <id>, "candidate": <id> }.
+
+    • The serializer's validate() ensures the candidate belongs to the seat.
+    • The creation is wrapped in transaction.atomic() so the INSERT + any
+      future side-effects are all-or-nothing.
+    • If the DB UniqueConstraint fires (race condition between two
+      concurrent requests), the IntegrityError is caught and a clear
+      400 is returned instead of a 500.
+    """
     voter = request.user
 
     serializer = VoteSerializer(data=request.data)
-    if serializer.is_valid():
-        seat_id = serializer.validated_data["seat"].id
-        candidate = serializer.validated_data["candidate"]
-
-        # Ensure candidate belongs to the selected seat.
-        if candidate.seat_id != seat_id:
-            return Response(
-                {"error": "Candidate does not belong to this seat."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Duplicate vote guard (DB constraint will also catch this).
-        if Vote.objects.filter(voter=voter, seat_id=seat_id).exists():
-            return Response(
-                {"error": "You have already voted for this seat."},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        serializer.save(voter=voter)
+    if not serializer.is_valid():
         return Response(
-            {"message": "Vote cast successfully"}, status=status.HTTP_201_CREATED
+            {"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        with transaction.atomic():
+            serializer.save(voter=voter)
+    except IntegrityError:
+        return Response(
+            {"error": "You have already cast a vote for this seat."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {"message": "Vote cast successfully"}, status=status.HTTP_201_CREATED
+    )
 
 
 @api_view(["GET"])
