@@ -1516,6 +1516,7 @@ def signup (request):
 #         return Response({"message":"login"}, status=200)
 
 @api_view(["POST"])
+@csrf_exempt
 def login(request):
     id_number = request.data.get("id_number", "").strip()
     voter_code = request.data.get("voter_code", "").strip()
@@ -1547,6 +1548,7 @@ def login(request):
 #vote api
 
 @api_view(["POST"])
+@csrf_exempt
 def cast_vote(request):
     print("DATA RECEIVED:", request.data)
     try:
@@ -1580,74 +1582,122 @@ def cast_vote(request):
         return Response({"message": "Candidate not found"}, status=404)
 
     try:
-        Vote.objects.create(voter=voter, seat=seat, candidate=candidate)
+        from django.db import transaction
+        with transaction.atomic():
+            Vote.objects.create(voter=voter, seat=seat, candidate=candidate)
         return Response({"message": "Vote cast successfully"}, status=200)
     except IntegrityError:
         return Response({"message": "You have already voted for this seat"}, status=400)
     
+from django.db.models import Q
+
+KENYA_COUNTIES = {
+    1: 'Mombasa', 2: 'Kwale', 3: 'Kilifi', 4: 'Tana River', 5: 'Lamu', 6: 'Taita-Taveta', 
+    7: 'Garissa', 8: 'Wajir', 9: 'Mandera', 10: 'Marsabit', 11: 'Isiolo', 12: 'Meru', 
+    13: 'Tharaka-Nithi', 14: 'Embu', 15: 'Kitui', 16: 'Machakos', 17: 'Makueni', 
+    18: 'Nyandarua', 19: 'Nyeri', 20: 'Kirinyaga', 21: 'Murang\'a', 22: 'Kiambu', 
+    23: 'Turkana', 24: 'West Pokot', 25: 'Samburu', 26: 'Trans-Nzoia', 27: 'Uasin Gishu', 
+    28: 'Elgeyo-Marakwet', 29: 'Nandi', 30: 'Baringo', 31: 'Laikipia', 32: 'Nakuru', 
+    33: 'Narok', 34: 'Kajiado', 35: 'Kericho', 36: 'Bomet', 37: 'Kakamega', 38: 'Vihiga', 
+    39: 'Bungoma', 40: 'Busia', 41: 'Siaya', 42: 'Kisumu', 43: 'Homa Bay', 44: 'Migori', 
+    45: 'Kisii', 46: 'Nyamira', 47: 'Nairobi'
+}
+
+def get_formatted_seat_name(seat):
+    if seat.level == 'County' and seat.county:
+        county_name = KENYA_COUNTIES.get(int(seat.county), f"County {seat.county}")
+        return f"{seat.seat_type} for {county_name} County"
+    return seat.name
+
 @api_view(["GET"])
 def get_candidates(request):
     county = request.GET.get("county")
     constituency = request.GET.get("constituency")
     ward = request.GET.get("ward")
+    seat_type = request.GET.get("seat_type")
 
-    seats = Seat.objects.all()
+    # Filter seats effectively from the DB directly without loading all records into memory
+    db_filter = Q(level='National')
+    if county:
+        db_filter |= Q(level='County', county=county)
+    if constituency:
+        db_filter |= Q(level='Constituency', constituency=constituency)
+    if ward:
+        db_filter |= Q(level='Ward', ward=ward)
+        
+    seats = Seat.objects.filter(db_filter)
+    
+    if seat_type:
+        seats = seats.filter(seat_type=seat_type)
+        
     result = []
-
     for seat in seats:
-        if seat.level == 'National':
-            candidates = Candidate.objects.filter(seat=seat)
-        elif seat.level == 'County':
-            candidates = Candidate.objects.filter(seat=seat, seat__county=county)
-        elif seat.level == 'Constituency':
-            candidates = Candidate.objects.filter(seat=seat, seat__constituency=constituency)
-        elif seat.level == 'Ward':
-            candidates = Candidate.objects.filter(seat=seat, seat__ward=ward)
-        else:
-            candidates = []
-
-        result.append({
-            "seat_id": seat.id,
-            "seat_type": seat.seat_type,
-            "seat_name": seat.name,
-            "candidates": [{"id": c.id, "full_name": c.full_name, "party": c.party} for c in candidates]
-        })
+        candidates = Candidate.objects.filter(seat=seat)
+        if candidates.exists():
+            result.append({
+                "seat_id": seat.id,
+                "seat_type": seat.seat_type,
+                "seat_name": get_formatted_seat_name(seat),
+                "candidates": [{"id": c.id, "full_name": c.full_name, "party": c.party} for c in candidates]
+            })
 
     return Response(result, status=200)
 
 
 
+from django.db.models import Count
+
 @api_view(["GET"])
 def get_results(request):
-    seat_type = request.GET.get("seat_type")
-    seats = Seat.objects.filter(seat_type=seat_type) if seat_type else Seat.objects.all()
-    result = []
+    """
+    Returns aggregated vote counts grouped by seat. Accepts optional area-based filtering.
+    """
+    county = request.query_params.get("county")
+    constituency = request.query_params.get("constituency")
+    ward = request.query_params.get("ward")
+    seat_type = request.query_params.get("seat_type")
 
+    db_filter = models.Q(level='National')
+    if county:
+        db_filter |= models.Q(level='County', county=county)
+    if constituency:
+        db_filter |= models.Q(level='Constituency', constituency=constituency)
+    if ward:
+        db_filter |= models.Q(level='Ward', ward=ward)
+
+    seats = Seat.objects.filter(db_filter)
+    if seat_type:
+        seats = seats.filter(seat_type=seat_type)
+
+    result = []
     for seat in seats:
-        candidates = Candidate.objects.filter(seat=seat)
-        result.append({
-            "seat_id": seat.id,
-            "seat_type": seat.seat_type,
-            "seat_name": seat.name,
-            "results": [
-                {
-                    "candidate_id": c.id,
-                    "full_name": c.full_name,
-                    "party": c.party,
-                    "votes": Vote.objects.filter(candidate=c).count()
-                }
-                for c in candidates
-            ]
-        })
+        from django.db.models import Count
+        candidates = Candidate.objects.filter(seat=seat).annotate(vote_count=Count('votes'))
+        
+        if candidates.exists():
+            result.append({
+                "seat_id": seat.id,
+                "seat_type": seat.seat_type,
+                "seat_name": get_formatted_seat_name(seat),
+                "results": [
+                    {
+                        "candidate_id": c.id,
+                        "full_name": c.full_name,
+                        "party": c.party,
+                        "votes": c.vote_count
+                    }
+                    for c in candidates
+                ]
+            })
 
     return Response(result, status=200)
 
 
 @api_view(["GET"])
 def voter_status(request):
-    voter_id = request.GET.get("voter_id")
+    voter_id = request.query_params.get('voter_id')
     if not voter_id:
-        return Response({"message": "voter_id required"}, status=400)
+        return Response({"error": "voter_id required"}, status=400)
 
     try:
         voter = Voter.objects.get(id=voter_id)
@@ -1657,4 +1707,144 @@ def voter_status(request):
     voted_seats = Vote.objects.filter(voter=voter).values_list('seat__seat_type', flat=True)
     return Response({"has_voted": list(voted_seats)}, status=200)
     
-    
+
+import google.generativeai as genai
+
+# Setup the API key globally or within the function (better locally for safety in this script, or initialize globally)
+genai.configure(api_key="AIzaSyCwyxx2xdaLhLLVjykL-3QVtNXa4eKrcLk")
+
+@api_view(["POST"])
+@csrf_exempt
+def summarize_candidate(request):
+    try:
+        candidate_id = request.data.get("candidate_id")
+        if not candidate_id:
+            return Response({"error": "candidate_id is required"}, status=400)
+            
+        candidate = Candidate.objects.select_related('seat').get(id=candidate_id)
+        
+        prompt = f"""
+        You are an impartial election guide for the Kenyan 'Uchaguzi' digital voting system. 
+        Write a very concise, neutral 2-sentence summary introducing the following candidate.
+        Name: {candidate.full_name}
+        Party: {candidate.party}
+        Running for: {get_formatted_seat_name(candidate.seat)} ({candidate.seat.seat_type})
+        Manifesto Details: {candidate.manifesto or ''}
+        
+        Instructions:
+        1. If '{candidate.full_name}' is a universally known, real-world political figure (e.g., a real Kenyan Presidential candidate like William Ruto or Raila Odinga), DO NOT output a generic summary. Instead, use your extensive real-world knowledge to neutrally summarize their actual historical political platform, their current agenda, and what they are famous for.
+        2. If '{candidate.full_name}' is a fictional or unknown local name, do not invent facts. Just summarize what a candidate in the role of {candidate.seat.name} generally aims to achieve for their constituents.
+        """
+        
+        # Use standard gemini model
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(prompt)
+        
+        return Response({"summary": response.text.strip()}, status=200)
+        
+    except Candidate.DoesNotExist:
+        return Response({"error": "Candidate not found"}, status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": f"AI Generation failed: {str(e)}"}, status=500)
+
+
+@api_view(["POST"])
+@csrf_exempt
+def admin_login(request):
+    key = request.data.get("admin_key", "")
+    if key == "IEBC2026": # Master key
+        return Response({"message": "Authorized", "token": "admin-token-777"}, status=200)
+    return Response({"message": "Unauthorized"}, status=401)
+
+@api_view(["GET"])
+def admin_stats(request):
+    import os
+    total_voters = Voter.objects.count()
+    total_votes = Vote.objects.count()
+    active_voters = Vote.objects.values('voter').distinct().count()
+    total_candidates = Candidate.objects.count()
+
+    return Response({
+        "total_voters": total_voters,
+        "total_votes": total_votes,
+        "active_voters": active_voters,
+        "total_candidates": total_candidates,
+        "velocity": total_votes // 10 if total_votes > 0 else 0,
+        "is_active": not os.path.exists("HALT_ELECTION.flag")
+    }, status=200)
+
+@api_view(["GET"])
+def admin_voters(request):
+    voters = Voter.objects.values('id', 'voter_code', 'full_name', 'county', 'constituency', 'ward', 'created_at').order_by('-created_at')[:50]
+    return Response(list(voters), status=200)
+
+@api_view(["GET"])
+def admin_candidates(request):
+    candidates = Candidate.objects.select_related('seat').all().order_by('seat__seat_type', 'full_name')[:2000]
+    data = [{
+        'id': c.id,
+        'full_name': c.full_name,
+        'party': c.party,
+        'seat_name': c.seat.name,
+        'seat_level': c.seat.level,
+        'seat_type': c.seat.seat_type
+    } for c in candidates]
+    return Response(data, status=200)
+
+@api_view(["GET"])
+def admin_votes(request):
+    votes = Vote.objects.select_related('voter', 'seat', 'candidate').order_by('-voted_at')[:50]
+    data = [{
+        'id': v.id,
+        'voter_code': v.voter.voter_code,
+        'voter_name': v.voter.full_name,
+        'seat': v.seat.name,
+        'candidate': v.candidate.full_name,
+        'time': v.voted_at
+    } for v in votes]
+    return Response(data, status=200)
+
+@api_view(["POST"])
+def admin_toggle_halt(request):
+    import os
+    flag_path = "HALT_ELECTION.flag"
+    if os.path.exists(flag_path):
+        os.remove(flag_path)
+        is_active = True
+    else:
+        with open(flag_path, 'w') as f:
+            f.write("HALTED")
+        is_active = False
+    return Response({"is_active": is_active}, status=200)
+
+@api_view(["POST"])
+def admin_candidate_add(request):
+    seat_type = request.data.get('seat_type', 'president')
+    # Default hook to a national seat to avoid geography complexities for now
+    seat = Seat.objects.filter(seat_type=seat_type).first()
+    if not seat:
+         return Response({"error": "No matching seat available"}, status=400)
+    Candidate.objects.create(
+         full_name=request.data.get('full_name'),
+         party=request.data.get('party', 'Independent'),
+         seat=seat
+    )
+    return Response({"message": "Successfully added candidate"}, status=201)
+
+@api_view(["DELETE"])
+def admin_candidate_delete(request, id):
+    try:
+        Candidate.objects.get(id=id).delete()
+        return Response({"message": "Successfully deleted candidate and their votes"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["POST"])
+def admin_restart_election(request):
+    try:
+        Vote.objects.all().delete()
+        return Response({"message": "All votes absolutely wiped. Election restarted."}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
