@@ -1472,6 +1472,10 @@ from django.views.decorators.csrf import csrf_exempt
 # ============================================================
 
 
+import random
+import string
+from django.contrib.auth.hashers import make_password, check_password
+
 @api_view(['GET'])
 def index (request): 
         return Response("Hello Timo")
@@ -1481,31 +1485,44 @@ def index (request):
 def signup (request):
     if request.method == "POST":  
         print(request.data)
-        generated_uuid = uuid.uuid4()
+        
+        id_number = request.data.get("id_number", "").strip()
+        phone_number = request.data.get("phone", "").strip()
+        
+        # Check if ID or Phone already exists
+        if Voter.objects.filter(id_number=id_number).exists():
+            return Response({"message": "A voter with this ID number is already registered."}, status=400)
+        
+        if Voter.objects.filter(phone_number=phone_number).exists():
+            return Response({"message": "A voter with this phone number is already registered."}, status=400)
+            
+        generated_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        hashed_password = make_password(generated_code)
+        
         try:
             user = Voter.objects.create(
                 full_name=request.data.get("full_name").strip(),
-                phone_number=request.data.get("phone").strip(),
+                phone_number=phone_number,
                 constituency=request.data.get("constituency"),
                 county=request.data.get("county"),
                 ward=request.data.get("ward"),
-                id_number=request.data.get("id_number"),
+                id_number=id_number,
                 email = request.data.get("email"),
-                voter_code=generated_uuid,
-                password_hash=generated_uuid
+                voter_code=generated_code,
+                password_hash=hashed_password
             )
     
             user.save()
             send_mail(
                     subject='Your Uchaguzi Voter Code',
-                    message=f'Hello {user.full_name},\n\nYour voter code is: {generated_uuid}\n\nUse this code along with your ID number to log in and vote.\n\nuChaguzi Electoral System',
+                    message=f'Hello {user.full_name},\n\nYour voter code is: {generated_code}\n\nUse this code along with your ID number to log in and vote. You will be prompted to change your password upon your first login.\n\nuChaguzi Electoral System',
                     from_email=settings.EMAIL_HOST_USER,
                     recipient_list=[user.email, 'muokijr@gmail.com'],
                     fail_silently=False,
                 )
-            return Response({"message":"Registration successful", "voter_code": str(generated_uuid)}, status=200)
+            return Response({"message":"Registration successful", "voter_code": generated_code}, status=200)
         except IntegrityError:
-            return Response({"message":"User already exists"}, status=200)
+            return Response({"message":"User already exists"}, status=400)
     return Response({"message":"signup"}, status=200)
 
 
@@ -1519,20 +1536,26 @@ def signup (request):
 @csrf_exempt
 def login(request):
     id_number = request.data.get("id_number", "").strip()
-    voter_code = request.data.get("voter_code", "").strip()
+    password = request.data.get("voter_code", "").strip()
 
-    if not id_number or not voter_code:
-        return Response({"message": "ID number and voter code are required"}, status=400)
+    if not id_number or not password:
+        return Response({"message": "ID number and password are required"}, status=400)
 
     try:
-        voter = Voter.objects.get(id_number=id_number, voter_code=voter_code)
+        voter = Voter.objects.get(id_number=id_number)
     except Voter.DoesNotExist:
         return Response({"message": "Invalid credentials"}, status=401)
+
+    if not check_password(password, voter.password_hash):
+        return Response({"message": "Invalid credentials"}, status=401)
+
+    requires_password_change = check_password(voter.voter_code, voter.password_hash)
 
     voted_seats = Vote.objects.filter(voter=voter).values_list('seat__seat_type', flat=True)
 
     return Response({
         "message": "Login successful",
+        "requires_password_change": requires_password_change,
         "user": {
             "id": voter.id,
             "full_name": voter.full_name,
@@ -1544,6 +1567,46 @@ def login(request):
             "has_voted": list(voted_seats)
         }
     }, status=200)
+
+import re
+
+@api_view(["POST"])
+@csrf_exempt
+def change_password(request):
+    id_number = request.data.get("id_number", "").strip()
+    old_password = request.data.get("old_password", "").strip()
+    new_password = request.data.get("new_password", "").strip()
+
+    if not all([id_number, old_password, new_password]):
+        return Response({"message": "All fields are required"}, status=400)
+
+    try:
+        voter = Voter.objects.get(id_number=id_number)
+    except Voter.DoesNotExist:
+        return Response({"message": "Voter not found"}, status=404)
+
+    if not check_password(old_password, voter.password_hash):
+        return Response({"message": "Invalid current password"}, status=401)
+
+    if len(new_password) < 8 or len(new_password) > 16:
+        return Response({"message": "Password must be between 8 and 16 characters"}, status=400)
+    
+    if not re.search(r"[A-Z]", new_password):
+        return Response({"message": "Password must contain an uppercase letter"}, status=400)
+        
+    if not re.search(r"[a-z]", new_password):
+        return Response({"message": "Password must contain a lowercase letter"}, status=400)
+        
+    if not re.search(r"\d", new_password):
+        return Response({"message": "Password must contain a number"}, status=400)
+        
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
+        return Response({"message": "Password must contain a special character"}, status=400)
+
+    voter.password_hash = make_password(new_password)
+    voter.save()
+
+    return Response({"message": "Password changed successfully"}, status=200)
     
 #vote api
 

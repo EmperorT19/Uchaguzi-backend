@@ -9,6 +9,7 @@ urlpatterns = [
     path("candidates", get_candidates),
     path("results", get_results),
     path("voter/status", voter_status),
+    path("voter/change-password", change_password),
     path("candidate/summarize", summarize_candidate),
     path("system-admin/login", admin_login),
     path("system-admin/stats", admin_stats),
