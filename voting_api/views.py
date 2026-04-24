@@ -1491,10 +1491,10 @@ def signup (request):
         
         # Check if ID or Phone already exists
         if Voter.objects.filter(id_number=id_number).exists():
-            return Response({"message": "A voter with this ID number is already registered."}, status=400)
+            return Response({"id_number": ["A voter with this ID number is already registered."]}, status=400)
         
         if Voter.objects.filter(phone_number=phone_number).exists():
-            return Response({"message": "A voter with this phone number is already registered."}, status=400)
+            return Response({"phone": ["A voter with this phone number is already registered."]}, status=400)
             
         generated_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         hashed_password = make_password(generated_code)
