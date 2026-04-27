@@ -60,35 +60,26 @@ TEMPLATES = [
 WSGI_APPLICATION = 'voting_backend.wsgi.application'
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# Railway injects DATABASE_URL automatically when you add a MySQL plugin
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
+# Railway MySQL exposes these vars — reference them in web service Variables tab:
+# MYSQLHOST     = ${{MySQL.MYSQLHOST}}
+# MYSQLPORT     = ${{MySQL.MYSQLPORT}}
+# MYSQLUSER     = ${{MySQL.MYSQLUSER}}
+# MYSQLPASSWORD = ${{MySQL.MYSQLPASSWORD}}
+# MYSQLDATABASE = ${{MySQL.MYSQLDATABASE}}
 
-if DATABASE_URL:
-    # Railway / production MySQL from DATABASE_URL
-    import urllib.parse as urlparse
-    url = urlparse.urlparse(DATABASE_URL)
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': url.path.lstrip('/'),
-            'USER': url.username,
-            'PASSWORD': url.password,
-            'HOST': url.hostname,
-            'PORT': str(url.port or 3306),
-        }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME':     os.environ.get('MYSQLDATABASE') or os.environ.get('DB_NAME', 'voting_system'),
+        'USER':     os.environ.get('MYSQLUSER')     or os.environ.get('DB_USER', 'root'),
+        'PASSWORD': os.environ.get('MYSQLPASSWORD') or os.environ.get('DB_PASSWORD', 'root'),
+        'HOST':     os.environ.get('MYSQLHOST')     or os.environ.get('DB_HOST', '127.0.0.1'),
+        'PORT':     os.environ.get('MYSQLPORT')     or os.environ.get('DB_PORT', '3306'),
+        'OPTIONS': {
+            'connect_timeout': 10,
+        },
     }
-else:
-    # Local development fallback
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': os.environ.get('DB_NAME', 'voting_system'),
-            'USER': os.environ.get('DB_USER', 'root'),
-            'PASSWORD': os.environ.get('DB_PASSWORD', 'root'),
-            'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
-            'PORT': os.environ.get('DB_PORT', '3306'),
-        }
-    }
+}
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
 # Allow your Netlify frontend URL + local dev
