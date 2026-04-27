@@ -82,16 +82,16 @@ DATABASES = {
 }
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-# Allow your Netlify frontend URL + local dev
-CORS_ALLOWED_ORIGINS_ENV = os.environ.get('CORS_ALLOWED_ORIGINS', '')
-CORS_ALLOWED_ORIGINS = [
-    o.strip() for o in CORS_ALLOWED_ORIGINS_ENV.split(',') if o.strip()
-] if CORS_ALLOWED_ORIGINS_ENV else [
-    "http://localhost:4200",
-    "http://127.0.0.1:4200",
-]
-
+# Allow all origins (safe for public API with token-based auth)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    'DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT',
+]
+CORS_ALLOW_HEADERS = [
+    'accept', 'authorization', 'content-type', 'origin',
+    'user-agent', 'x-csrftoken', 'x-requested-with',
+]
 
 # ─── Password validation ───────────────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
