@@ -9,6 +9,7 @@ urlpatterns = [
     path("candidates", get_candidates),
     path("results", get_results),
     path("voter/status", voter_status),
+    path("voter/change-password", change_password),
     path("candidate/summarize", summarize_candidate),
     path("system-admin/login", admin_login),
     path("system-admin/stats", admin_stats),
@@ -19,4 +20,9 @@ urlpatterns = [
     path("system-admin/candidates/add", admin_candidate_add),
     path("system-admin/candidates/<int:id>/delete", admin_candidate_delete),
     path("system-admin/restart-voting", admin_restart_election),
+    path("results/leaders", get_all_leaders),
+    path("results/analysis/ward/<int:ward_id>", get_ward_analysis),
+    path("results/analysis/constituency/<int:constituency_id>", get_constituency_analysis),
+    path("results/all_candidates", get_all_candidates_analysis),
+    path("chat", chat_response),
 ]

@@ -1472,6 +1472,10 @@ from django.views.decorators.csrf import csrf_exempt
 # ============================================================
 
 
+import random
+import string
+from django.contrib.auth.hashers import make_password, check_password
+
 @api_view(['GET'])
 def index (request): 
         return Response("Hello Timo")
@@ -1481,31 +1485,44 @@ def index (request):
 def signup (request):
     if request.method == "POST":  
         print(request.data)
-        generated_uuid = uuid.uuid4()
+        
+        id_number = request.data.get("id_number", "").strip()
+        phone_number = request.data.get("phone", "").strip()
+        
+        # Check if ID or Phone already exists
+        if Voter.objects.filter(id_number=id_number).exists():
+            return Response({"id_number": ["A voter with this ID number is already registered."]}, status=400)
+        
+        if Voter.objects.filter(phone_number=phone_number).exists():
+            return Response({"phone": ["A voter with this phone number is already registered."]}, status=400)
+            
+        generated_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        hashed_password = make_password(generated_code)
+        
         try:
             user = Voter.objects.create(
                 full_name=request.data.get("full_name").strip(),
-                phone_number=request.data.get("phone").strip(),
+                phone_number=phone_number,
                 constituency=request.data.get("constituency"),
                 county=request.data.get("county"),
                 ward=request.data.get("ward"),
-                id_number=request.data.get("id_number"),
+                id_number=id_number,
                 email = request.data.get("email"),
-                voter_code=generated_uuid,
-                password_hash=generated_uuid
+                voter_code=generated_code,
+                password_hash=hashed_password
             )
     
             user.save()
             send_mail(
                     subject='Your Uchaguzi Voter Code',
-                    message=f'Hello {user.full_name},\n\nYour voter code is: {generated_uuid}\n\nUse this code along with your ID number to log in and vote.\n\nuChaguzi Electoral System',
+                    message=f'Hello {user.full_name},\n\nYour voter code is: {generated_code}\n\nUse this code along with your ID number to log in and vote. You will be prompted to change your password upon your first login.\n\nuChaguzi Electoral System',
                     from_email=settings.EMAIL_HOST_USER,
                     recipient_list=[user.email, 'muokijr@gmail.com'],
                     fail_silently=False,
                 )
-            return Response({"message":"Registration successful", "voter_code": str(generated_uuid)}, status=200)
+            return Response({"message":"Registration successful", "voter_code": generated_code}, status=200)
         except IntegrityError:
-            return Response({"message":"User already exists"}, status=200)
+            return Response({"message":"User already exists"}, status=400)
     return Response({"message":"signup"}, status=200)
 
 
@@ -1519,20 +1536,26 @@ def signup (request):
 @csrf_exempt
 def login(request):
     id_number = request.data.get("id_number", "").strip()
-    voter_code = request.data.get("voter_code", "").strip()
+    password = request.data.get("voter_code", "").strip()
 
-    if not id_number or not voter_code:
-        return Response({"message": "ID number and voter code are required"}, status=400)
+    if not id_number or not password:
+        return Response({"message": "ID number and password are required"}, status=400)
 
     try:
-        voter = Voter.objects.get(id_number=id_number, voter_code=voter_code)
+        voter = Voter.objects.get(id_number=id_number)
     except Voter.DoesNotExist:
         return Response({"message": "Invalid credentials"}, status=401)
+
+    if not check_password(password, voter.password_hash):
+        return Response({"message": "Invalid credentials"}, status=401)
+
+    requires_password_change = check_password(voter.voter_code, voter.password_hash)
 
     voted_seats = Vote.objects.filter(voter=voter).values_list('seat__seat_type', flat=True)
 
     return Response({
         "message": "Login successful",
+        "requires_password_change": requires_password_change,
         "user": {
             "id": voter.id,
             "full_name": voter.full_name,
@@ -1544,6 +1567,46 @@ def login(request):
             "has_voted": list(voted_seats)
         }
     }, status=200)
+
+import re
+
+@api_view(["POST"])
+@csrf_exempt
+def change_password(request):
+    id_number = request.data.get("id_number", "").strip()
+    old_password = request.data.get("old_password", "").strip()
+    new_password = request.data.get("new_password", "").strip()
+
+    if not all([id_number, old_password, new_password]):
+        return Response({"message": "All fields are required"}, status=400)
+
+    try:
+        voter = Voter.objects.get(id_number=id_number)
+    except Voter.DoesNotExist:
+        return Response({"message": "Voter not found"}, status=404)
+
+    if not check_password(old_password, voter.password_hash):
+        return Response({"message": "Invalid current password"}, status=401)
+
+    if len(new_password) < 8 or len(new_password) > 16:
+        return Response({"message": "Password must be between 8 and 16 characters"}, status=400)
+    
+    if not re.search(r"[A-Z]", new_password):
+        return Response({"message": "Password must contain an uppercase letter"}, status=400)
+        
+    if not re.search(r"[a-z]", new_password):
+        return Response({"message": "Password must contain a lowercase letter"}, status=400)
+        
+    if not re.search(r"\d", new_password):
+        return Response({"message": "Password must contain a number"}, status=400)
+        
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
+        return Response({"message": "Password must contain a special character"}, status=400)
+
+    voter.password_hash = make_password(new_password)
+    voter.save()
+
+    return Response({"message": "Password changed successfully"}, status=200)
     
 #vote api
 
@@ -1822,10 +1885,20 @@ def admin_toggle_halt(request):
 @api_view(["POST"])
 def admin_candidate_add(request):
     seat_type = request.data.get('seat_type', 'president')
-    # Default hook to a national seat to avoid geography complexities for now
-    seat = Seat.objects.filter(seat_type=seat_type).first()
+    region_name = request.data.get('region_name', '').strip()
+    
+    if seat_type in ['governor', 'senator', 'woman_rep'] and region_name:
+        seat = Seat.objects.filter(seat_type=seat_type, county__iexact=region_name).first()
+    elif seat_type == 'mp' and region_name:
+        seat = Seat.objects.filter(seat_type=seat_type, constituency__iexact=region_name).first()
+    elif seat_type == 'mca' and region_name:
+        seat = Seat.objects.filter(seat_type=seat_type, ward__iexact=region_name).first()
+    else:
+        seat = Seat.objects.filter(seat_type=seat_type).first()
+
     if not seat:
-         return Response({"error": "No matching seat available"}, status=400)
+         return Response({"error": f"No matching seat available for {seat_type} in '{region_name}'"}, status=400)
+    
     Candidate.objects.create(
          full_name=request.data.get('full_name'),
          party=request.data.get('party', 'Independent'),
@@ -1848,3 +1921,216 @@ def admin_restart_election(request):
         return Response({"message": "All votes absolutely wiped. Election restarted."}, status=200)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
+from django.db.models import Count
+
+@api_view(["GET"])
+def get_all_leaders(request):
+    seats = Seat.objects.all()
+    results = []
+    for seat in seats:
+        leader = Vote.objects.filter(seat=seat).values(
+            'candidate__full_name', 'candidate__party'
+        ).annotate(votes=Count('id')).order_by('-votes').first()
+        
+        if leader:
+            results.append({
+                'seat_name': seat.name,
+                'seat_type': seat.seat_type,
+                'level': seat.level,
+                'leader_name': leader['candidate__full_name'],
+                'leader_party': leader['candidate__party'],
+                'votes': leader['votes']
+            })
+    return Response(results, status=200)
+
+@api_view(["GET"])
+def get_ward_analysis(request, ward_id):
+    # How did voters in this ward vote?
+    votes = Vote.objects.filter(voter__ward=ward_id).values(
+        'seat__seat_type', 'candidate__full_name', 'candidate__party'
+    ).annotate(votes=Count('id')).order_by('seat__seat_type', '-votes')
+    
+    analysis = {}
+    for v in votes:
+        stype = v['seat__seat_type']
+        if stype not in analysis:
+            analysis[stype] = []
+        analysis[stype].append({
+            'candidate': v['candidate__full_name'],
+            'party': v['candidate__party'],
+            'votes': v['votes']
+        })
+    return Response(analysis, status=200)
+
+@api_view(["GET"])
+def get_constituency_analysis(request, constituency_id):
+    # How did voters in this constituency vote?
+    votes = Vote.objects.filter(voter__constituency=constituency_id).values(
+        'seat__seat_type', 'candidate__full_name', 'candidate__party'
+    ).annotate(votes=Count('id')).order_by('seat__seat_type', '-votes')
+    
+    analysis = {}
+    for v in votes:
+        stype = v['seat__seat_type']
+        if stype not in analysis:
+            analysis[stype] = []
+        analysis[stype].append({
+            'candidate': v['candidate__full_name'],
+            'party': v['candidate__party'],
+            'votes': v['votes']
+        })
+    return Response(analysis, status=200)
+
+PROVINCE_TO_COUNTY = {
+    'Coast': list(range(1, 7)),
+    'North Eastern': list(range(7, 10)),
+    'Eastern': list(range(10, 18)),
+    'Central': list(range(18, 23)),
+    'Rift Valley': list(range(23, 37)),
+    'Western': list(range(37, 41)),
+    'Nyanza': list(range(41, 47)),
+    'Nairobi': [47],
+}
+
+@api_view(["GET"])
+def get_all_candidates_analysis(request):
+    province = request.query_params.get('province')
+    county_id = request.query_params.get('county')
+    constituency_id = request.query_params.get('constituency')
+    
+    # Base query for all votes
+    votes_query = Vote.objects.all()
+    
+    # Apply filters based on the voter's location
+    if constituency_id:
+        votes_query = votes_query.filter(voter__constituency=constituency_id)
+    elif county_id:
+        votes_query = votes_query.filter(voter__county=county_id)
+    elif province and province in PROVINCE_TO_COUNTY:
+        counties = PROVINCE_TO_COUNTY[province]
+        votes_query = votes_query.filter(voter__county__in=counties)
+        
+    # Group by seat and candidate
+    grouped_votes = votes_query.values(
+        'seat__name', 'seat__seat_type', 'seat__level',
+        'candidate__full_name', 'candidate__party'
+    ).annotate(votes=Count('id')).order_by('seat__seat_type', '-votes')
+    
+    # Format the response
+    results = {}
+    for v in grouped_votes:
+        stype = v['seat__seat_type']
+        if stype not in results:
+            results[stype] = []
+        results[stype].append({
+            'seat_name': v['seat__name'],
+            'candidate': v['candidate__full_name'],
+            'party': v['candidate__party'],
+            'votes': v['votes'],
+            'seat_level': v['seat__level']
+        })
+        
+    return Response(results, status=200)
+
+@api_view(["POST"])
+def chat_response(request):
+    """
+    Intelligent chatbot backend using a keyword-matching engine.
+    """
+    user_message = request.data.get('message', '').lower()
+    
+    if not user_message:
+        return Response({'reply': "I'm sorry, I didn't catch that. Could you please type your question?"}, status=400)
+    # Define Intents and Keywords
+    # Define Intents and Keywords in both languages
+    intents = {
+        'registration': {
+            'keywords_en': ['register', 'sign up', 'create account', 'join', 'how to register', 'account'],
+            'keywords_sw': ['jisajili', 'jiunge', 'akaunti', 'jinsi ya kujisajili', 'kujiandikisha'],
+            'response_en': 'To register, click the "Register" button on the home page. You will need a valid Kenyan ID, your phone number, and you must select your County, Constituency, and Ward.',
+            'response_sw': 'Ili kujisajili, bofya kitufe cha "Register" kwenye ukurasa wa nyumbani. Utahitaji Kitambulisho cha Taifa, nambari ya simu, na utahitajika kuchagua Kaunti, Eneo Bunge, na Wodi yako.'
+        },
+        'voting': {
+            'keywords_en': ['vote', 'cast', 'ballot', 'how to vote', 'voting', 'elect', 'candidates'],
+            'keywords_sw': ['piga kura', 'kura', 'jinsi ya kupiga kura', 'wagombea', 'chagua'],
+            'response_en': 'Once logged in, navigate to the "Voting" page. You will see ballots tailored to your registered region. Simply select your preferred candidates and submit your vote. Remember, you can only vote once per seat!',
+            'response_sw': 'Baada ya kuingia, nenda kwenye ukurasa wa "Kura". Utaona karatasi za kura kulingana na eneo lako. Chagua wagombea wako na uwasilishe kura yako. Kumbuka, unaweza kupiga kura mara moja tu kwa kila kiti!'
+        },
+        'results': {
+            'keywords_en': ['results', 'leaders', 'winning', 'who is winning', 'standings', 'score', 'outcome', 'tally'],
+            'keywords_sw': ['matokeo', 'viongozi', 'nani anashinda', 'mshindi'],
+            'response_en': 'You can view live election results by navigating to the "Results" page from the dashboard. It shows the leading candidates nationwide in real-time.',
+            'response_sw': 'Unaweza kuona matokeo moja kwa moja kwenye ukurasa wa "Matokeo". Inaonyesha wagombea wanaoongoza nchi nzima kwa wakati halisi.'
+        },
+        'analytics': {
+            'keywords_en': ['analytics', 'filter', 'region', 'county results', 'ward results', 'province', 'breakdown', 'where is analytics', 'charts', 'graphs'],
+            'keywords_sw': ['uchambuzi', 'changanua', 'mkoa', 'matokeo ya kaunti', 'chati', 'grafu', 'uchanganuzi'],
+            'response_en': 'For an in-depth breakdown, click the "Analytics" button in the top navigation bar. You can filter by Province, County, and Constituency to see exactly how specific regions are voting for every candidate!',
+            'response_sw': 'Kwa uchambuzi wa kina, bofya kitufe cha "Analytics" juu. Unaweza kuchuja kwa Mkoa, Kaunti, na Eneo Bunge ili kuona jinsi maeneo tofauti yanavyopiga kura!'
+        },
+        'password': {
+            'keywords_en': ['password', 'forgot', 'reset', 'lost password', 'cant login', "can't login", 'credentials', 'change password'],
+            'keywords_sw': ['nywila', 'nenosiri', 'umesahau', 'sahaulika', 'siwezi kuingia', 'badilisha nenosiri'],
+            'response_en': 'If you forgot your password, please contact a system administrator to have it reset. (Currently, there is no automated password reset link for security reasons).',
+            'response_sw': 'Ikiwa umesahau nenosiri lako, tafadhali wasiliana na msimamizi wa mfumo ili alibadilishe. (Kwa sasa hakuna kiungo cha kiotomatiki kwa sababu za kiusalama).'
+        },
+        'eligibility': {
+            'keywords_en': ['who can vote', 'eligible', 'age', 'requirements', 'allowed', 'id', 'citizenship'],
+            'keywords_sw': ['nani anaruhusiwa', 'vigezo', 'umri', 'kuruhusiwa', 'kitambulisho', 'uraia', 'miaka'],
+            'response_en': 'Any Kenyan citizen over the age of 18 with a valid National ID or Passport who has registered on our platform can vote.',
+            'response_sw': 'Raia yeyote wa Kenya aliye na umri wa miaka 18 au zaidi na Kitambulisho cha Taifa au Pasipoti halali, na aliyejisajili kwenye mfumo wetu anaweza kupiga kura.'
+        },
+        'admin': {
+            'keywords_en': ['admin', 'dashboard', 'command center', 'halt', 'restart'],
+            'keywords_sw': ['msimamizi', 'msimamizi wa mfumo', 'simamisha', 'anza tena', 'dhibiti'],
+            'response_en': 'The Admin Command Center is restricted. Only authorized officials with a Root Access Key can enter. From there, they can monitor live database velocity, add candidates, or halt the election.',
+            'response_sw': 'Kituo cha Usimamizi kimezuiwa. Ni maafisa walioidhinishwa tu ndio wanaoweza kuingia. Kutoka hapo, wanaweza kufuatilia mfumo, kuongeza wagombea, au kusimamisha uchaguzi.'
+        },
+        'greeting': {
+            'keywords_en': ['hello', 'hi', 'hey', 'greetings', 'morning', 'afternoon'],
+            'keywords_sw': ['jambo', 'habari', 'sasa', 'mambo', 'niaje', 'sema', 'vipi'],
+            'response_en': 'Hello there! I am your Uchaguzi intelligent assistant. How can I help you with the voting platform today?',
+            'response_sw': 'Jambo! Mimi ni msaidizi wako wa Uchaguzi. Naweza kukusaidiaje kuhusu mfumo wa kupiga kura leo?'
+        },
+        'thanks': {
+            'keywords_en': ['thanks', 'thank you', 'appreciate', 'good bot'],
+            'keywords_sw': ['asante', 'shukran', 'nashukuru'],
+            'response_en': 'You are very welcome! If you need anything else, just ask.',
+            'response_sw': 'Karibu sana! Kama unahitaji kingine, niulize tu.'
+        },
+        'theme': {
+            'keywords_en': ['light mode', 'dark mode', 'theme', 'color', 'background', 'bright', 'dark'],
+            'keywords_sw': ['rangi', 'muonekano', 'giza', 'mwangaza'],
+            'response_en': 'You can switch between Light and Dark mode by clicking the circular Theme Toggle switch floating in the bottom-left corner of your screen.',
+            'response_sw': 'Unaweza kubadilisha kati ya muonekano wa Mwangaza (Light) na Giza (Dark) kwa kubofya kitufe cha duara kilicho chini upande wa kushoto wa skrini yako.'
+        }
+    }
+
+    best_intent = None
+    max_score = 0
+    language_matched = 'en'
+
+    # Check for highest scoring keyword match across both languages
+    for intent_name, intent_data in intents.items():
+        for keyword in intent_data['keywords_en']:
+            if keyword in user_message:
+                if len(keyword) > max_score:
+                    max_score = len(keyword)
+                    best_intent = intent_name
+                    language_matched = 'en'
+        
+        for keyword in intent_data['keywords_sw']:
+            if keyword in user_message:
+                if len(keyword) > max_score:
+                    max_score = len(keyword)
+                    best_intent = intent_name
+                    language_matched = 'sw'
+
+    if best_intent and max_score > 0:
+        reply = intents[best_intent][f'response_{language_matched}']
+    else:
+        # Fallback - bilingual
+        reply = "I'm sorry, I'm only trained to help with the Uchaguzi platform (registration, voting, results). Could you rephrase your question? / Samahani, nimefunzwa kusaidia na mfumo wa Uchaguzi tu (usajili, kupiga kura, matokeo). Unaweza kuuliza kwa njia nyingine?"
+
+    return Response({'reply': reply}, status=200)
