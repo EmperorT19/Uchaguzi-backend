@@ -8,17 +8,26 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('csv_file', type=str, help='The absolute or relative path to the CSV file')
+        parser.add_argument('--force', action='store_true', help='Force wipe and load')
 
     def handle(self, *args, **kwargs):
         csv_file = kwargs['csv_file']
 
-        # Skip if candidates already exist (prevents duplicates on repeated deploys)
-        existing = Candidate.objects.count()
-        if existing > 0:
-            self.stdout.write(self.style.SUCCESS(
-                f"Database already has {existing} candidates. Skipping load."
-            ))
-            return
+        if kwargs.get('force'):
+            self.stdout.write(self.style.WARNING("Force flag passed. Wiping old data..."))
+            Candidate.objects.all().delete()
+            # Also clear seats except maybe we don't want to break foreign keys of Votes?
+            # Wait! If we delete Candidate, Votes to that candidate are CASCADE deleted. 
+            # If we delete Seat, Votes to that seat are CASCADE deleted. 
+            # This is an emergency wipe, we have to recreate them.
+            Seat.objects.all().delete()
+        else:
+            existing = Candidate.objects.count()
+            if existing > 0:
+                self.stdout.write(self.style.SUCCESS(
+                    f"Database already has {existing} candidates. Skipping load."
+                ))
+                return
 
         if not os.path.exists(csv_file):
             self.stderr.write(self.style.ERROR(f"File {csv_file} does not exist. Did you specify the right path?"))
