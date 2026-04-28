@@ -12,6 +12,14 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         csv_file = kwargs['csv_file']
 
+        # Skip if candidates already exist (prevents duplicates on repeated deploys)
+        existing = Candidate.objects.count()
+        if existing > 0:
+            self.stdout.write(self.style.SUCCESS(
+                f"Database already has {existing} candidates. Skipping load."
+            ))
+            return
+
         if not os.path.exists(csv_file):
             self.stderr.write(self.style.ERROR(f"File {csv_file} does not exist. Did you specify the right path?"))
             return
