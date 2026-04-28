@@ -1513,13 +1513,21 @@ def signup (request):
             )
     
             user.save()
-            send_mail(
+            import smtplib
+            try:
+                send_mail(
                     subject='Your Uchaguzi Voter Code',
                     message=f'Hello {user.full_name},\n\nYour voter code is: {generated_code}\n\nUse this code along with your ID number to log in and vote. You will be prompted to change your password upon your first login.\n\nuChaguzi Electoral System',
                     from_email=settings.EMAIL_HOST_USER,
                     recipient_list=[user.email, 'muokijr@gmail.com'],
                     fail_silently=False,
                 )
+            except smtplib.SMTPException as e:
+                # Log the error but do not crash the registration
+                print(f"Failed to send email to {user.email}: {e}")
+            except Exception as e:
+                print(f"Unexpected email error: {e}")
+
             return Response({"message":"Registration successful", "voter_code": generated_code}, status=200)
         except IntegrityError:
             return Response({"message":"User already exists"}, status=400)
