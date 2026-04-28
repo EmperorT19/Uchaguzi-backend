@@ -1848,7 +1848,7 @@ def admin_stats(request):
 
 @api_view(["GET"])
 def admin_voters(request):
-    voters = Voter.objects.values('id', 'voter_code', 'full_name', 'county', 'constituency', 'ward', 'created_at').order_by('-created_at')[:50]
+    voters = Voter.objects.values('id', 'voter_code', 'full_name', 'county', 'constituency', 'ward', 'created_at', 'password_hash').order_by('-created_at')[:50]
     return Response(list(voters), status=200)
 
 @api_view(["GET"])
@@ -1919,6 +1919,42 @@ def admin_candidate_delete(request, id):
     try:
         Candidate.objects.get(id=id).delete()
         return Response({"message": "Successfully deleted candidate and their votes"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["DELETE"])
+def admin_candidate_delete_all(request):
+    try:
+        Candidate.objects.all().delete()
+        return Response({"message": "Successfully deleted all candidates and their votes"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["DELETE"])
+def admin_voter_delete(request, id):
+    try:
+        Voter.objects.get(id=id).delete()
+        return Response({"message": "Successfully deleted voter and their votes"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["DELETE"])
+def admin_voter_delete_all(request):
+    try:
+        Voter.objects.all().delete()
+        return Response({"message": "Successfully deleted all voters and their votes"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["POST"])
+def admin_voter_reset_password(request, id):
+    try:
+        voter = Voter.objects.get(id=id)
+        voter.password_hash = make_password("IEBC2026!")
+        voter.save()
+        return Response({"message": f"Password for {voter.full_name} reset to 'IEBC2026!'"}, status=200)
+    except Voter.DoesNotExist:
+        return Response({"error": "Voter not found"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
 
