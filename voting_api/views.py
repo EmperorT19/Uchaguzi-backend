@@ -1516,19 +1516,22 @@ def signup (request):
     
             user.save()
             import smtplib
-            try:
-                send_mail(
-                    subject='Your Uchaguzi Voter Code',
-                    message=f'Hello {user.full_name},\n\nYour voter code is: {generated_code}\n\nUse this code along with your ID number to log in and vote. You will be prompted to change your password upon your first login.\n\nuChaguzi Electoral System',
-                    from_email=settings.EMAIL_HOST_USER,
-                    recipient_list=[user.email, 'muokijr@gmail.com'],
-                    fail_silently=False,
-                )
-            except smtplib.SMTPException as e:
-                # Log the error but do not crash the registration
-                print(f"Failed to send email to {user.email}: {e}")
-            except Exception as e:
-                print(f"Unexpected email error: {e}")
+            import threading
+            
+            def send_registration_email(user, code):
+                try:
+                    send_mail(
+                        subject='Your Uchaguzi Voter Code',
+                        message=f'Hello {user.full_name},\n\nYour voter code is: {code}\n\nUse this code along with your ID number to log in and vote. You will be prompted to change your password upon your first login.\n\nuChaguzi Electoral System',
+                        from_email=settings.EMAIL_HOST_USER,
+                        recipient_list=[user.email, 'muokijr@gmail.com'],
+                        fail_silently=False,
+                    )
+                except Exception as e:
+                    print(f"Failed to send email to {user.email}: {e}")
+
+            # Send email in background to prevent slow registration spinning
+            threading.Thread(target=send_registration_email, args=(user, generated_code)).start()
 
             return Response({"message":"Registration successful", "voter_code": generated_code}, status=200)
         except IntegrityError:
@@ -1698,15 +1701,15 @@ def get_candidates(request):
     if ward:
         db_filter |= Q(level='Ward', ward=ward)
         
-    seats = Seat.objects.filter(db_filter)
+    seats = Seat.objects.filter(db_filter).prefetch_related('candidates')
     
     if seat_type:
         seats = seats.filter(seat_type=seat_type)
         
     result = []
     for seat in seats:
-        candidates = Candidate.objects.filter(seat=seat)
-        if candidates.exists():
+        candidates = seat.candidates.all()
+        if candidates:
             result.append({
                 "seat_id": seat.id,
                 "seat_type": seat.seat_type,
@@ -1738,16 +1741,18 @@ def get_results(request):
     if ward:
         db_filter |= models.Q(level='Ward', ward=ward)
 
-    seats = Seat.objects.filter(db_filter)
+    from django.db.models import Count, Prefetch
+
+    candidate_qs = Candidate.objects.annotate(vote_count=Count('votes'))
+    seats = Seat.objects.filter(db_filter).prefetch_related(Prefetch('candidates', queryset=candidate_qs))
     if seat_type:
         seats = seats.filter(seat_type=seat_type)
 
     result = []
     for seat in seats:
-        from django.db.models import Count
-        candidates = Candidate.objects.filter(seat=seat).annotate(vote_count=Count('votes'))
+        candidates = seat.candidates.all()
         
-        if candidates.exists():
+        if candidates:
             result.append({
                 "seat_id": seat.id,
                 "seat_type": seat.seat_type,
@@ -1782,9 +1787,11 @@ def voter_status(request):
     
 
 import google.generativeai as genai
+import os
 
-# Setup the API key globally or within the function (better locally for safety in this script, or initialize globally)
-genai.configure(api_key="AIzaSyCwyxx2xdaLhLLVjykL-3QVtNXa4eKrcLk")
+# Try to get key from environment, fallback to a dummy if not set (will fail gracefully)
+api_key = os.environ.get("GEMINI_API_KEY", "")
+genai.configure(api_key=api_key)
 
 @api_view(["POST"])
 @csrf_exempt
@@ -1966,7 +1973,7 @@ def force_load_candidates(request):
     try:
         # Use absolute path if possible or relative to BASE_DIR
         csv_path = os.path.join(settings.BASE_DIR, 'test_candidates.csv')
-        call_command('load_candidates', csv_path, stdout=out, stderr=err)
+        call_command('load_candidates', csv_path, force=True, stdout=out, stderr=err)
         return Response({
             "stdout": out.getvalue(),
             "stderr": err.getvalue()
