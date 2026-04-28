@@ -1923,6 +1923,58 @@ def admin_candidate_delete(request, id):
         return Response({"error": str(e)}, status=500)
 
 @api_view(["DELETE"])
+def admin_voter_delete(request, id):
+    try:
+        Voter.objects.get(id=id).delete()
+        return Response({"message": "Successfully deleted voter"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["DELETE"])
+def admin_voter_delete_all(request):
+    try:
+        Voter.objects.all().delete()
+        return Response({"message": "Successfully deleted all voters"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(["POST"])
+def admin_voter_reset_password(request, id):
+    try:
+        voter = Voter.objects.get(id=id)
+        # Reset to temporary code (voter_code)
+        voter.password_hash = make_password(voter.voter_code)
+        voter.save()
+        return Response({"message": "Password reset successfully"}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+from django.core.management import call_command
+from io import StringIO
+
+@api_view(['POST'])
+@csrf_exempt
+def force_load_candidates(request):
+    key = request.data.get("admin_key", "")
+    if key != "IEBC2026":
+        return Response({"error": "Unauthorized"}, status=401)
+        
+    out = StringIO()
+    err = StringIO()
+    try:
+        # Use absolute path if possible or relative to BASE_DIR
+        csv_path = os.path.join(settings.BASE_DIR, 'test_candidates.csv')
+        call_command('load_candidates', csv_path, stdout=out, stderr=err)
+        return Response({
+            "stdout": out.getvalue(),
+            "stderr": err.getvalue()
+        })
+    except Exception as e:
+        return Response({
+            "error": str(e),
+            "stdout": out.getvalue(),
+            "stderr": err.getvalue()
+        }, status=500)
 def admin_candidate_delete_all(request):
     try:
         Candidate.objects.all().delete()

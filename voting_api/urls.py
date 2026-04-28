@@ -18,6 +18,7 @@ urlpatterns = [
     path("system-admin/votes", admin_votes),
     path("system-admin/toggle-halt", admin_toggle_halt),
     path("system-admin/candidates/add", admin_candidate_add),
+    path("system-admin/candidates/force-load", force_load_candidates),
     path("system-admin/candidates/<int:id>/delete", admin_candidate_delete),
     path("system-admin/candidates/delete-all", admin_candidate_delete_all),
     path("system-admin/voters/<int:id>/delete", admin_voter_delete),
