@@ -1979,11 +1979,15 @@ def force_load_candidates(request):
             "stderr": err.getvalue()
         })
     except Exception as e:
+        import traceback
         return Response({
             "error": str(e),
+            "traceback": traceback.format_exc(),
             "stdout": out.getvalue(),
             "stderr": err.getvalue()
         }, status=500)
+
+@api_view(["DELETE"])
 def admin_candidate_delete_all(request):
     try:
         Candidate.objects.all().delete()
