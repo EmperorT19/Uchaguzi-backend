@@ -104,10 +104,22 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ─── Email ────────────────────────────────────────────────────────────────────
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_TIMEOUT = 3
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'muokijr@gmail.com')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'mumq nheg yujn izte')
+# Detect environment: defaults to 'local' when the variable isn't set.
+# On Railway, add the variable  ENVIRONMENT = production  in the Variables tab.
+APP_ENV = os.environ.get('ENVIRONMENT', 'local')
+
+if APP_ENV == 'production':
+    # --- RAILWAY / PRODUCTION ---
+    # Bypasses real SMTP (ports are blocked on most PaaS hosts).
+    # Emails are printed to the Railway log instead.
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    # --- LOCAL DEVELOPMENT ---
+    # Sends real emails through Gmail SMTP.
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = 'smtp.gmail.com'
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_TIMEOUT = 3
+    EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'muokijr@gmail.com')
+    EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'mumq nheg yujn izte')
