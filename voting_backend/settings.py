@@ -23,12 +23,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
-    'corsheaders',
     'voting_api',
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
+    'voting_api.cors_middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',   # serves static files in production
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -81,16 +80,7 @@ DATABASES = {
 }
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
-# Allow all origins (safe for public API with token-based auth)
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOW_CREDENTIALS = False
-CORS_ALLOW_METHODS = [
-    'DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT',
-]
-CORS_ALLOW_HEADERS = [
-    'accept', 'authorization', 'content-type', 'origin',
-    'user-agent', 'x-csrftoken', 'x-requested-with',
-]
+# Handled by voting_api.cors_middleware.CorsMiddleware (custom, no package needed)
 
 # ─── Password validation ───────────────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
