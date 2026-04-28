@@ -33,16 +33,17 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"File {csv_file} does not exist. Did you specify the right path?"))
             return
 
+        # Cache for seats to avoid redundant DB queries
+        seat_cache = {}
+        for s in Seat.objects.all():
+            key = (s.seat_type, s.county, s.constituency, s.ward)
+            seat_cache[key] = s
+
         with open(csv_file, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
-            success_count = 0
-            skip_count = 0
+            candidates_to_create = []
             
             for row_num, row in enumerate(reader, start=2):
-                # ---------------------------------------------------------
-                # THE TRY BLOCK
-                # ---------------------------------------------------------
                 try:
                     full_name = row.get('full_name', '').strip()
                     party = row.get('party', '').strip()
@@ -53,40 +54,45 @@ class Command(BaseCommand):
                     constituency_id = row.get('constituency_id', '').strip()
                     ward_id = row.get('ward_id', '').strip()
 
-                    # Convert string IDs back to Integers (or None if empty)
                     county_id = int(county_id) if county_id else None
                     constituency_id = int(constituency_id) if constituency_id else None
                     ward_id = int(ward_id) if ward_id else None
 
-                    # If Seat doesn't exist, we will gracefully generate a dummy one to avoid crashing
-                    seat, created = Seat.objects.get_or_create(
-                        seat_type=seat_type,
-                        county=county_id,
-                        constituency=constituency_id,
-                        ward=ward_id,
-                        defaults={
-                            'level': level,
-                            'name': f"{seat_type.title()} {level}"
-                        }
-                    )
+                    seat_key = (seat_type, county_id, constituency_id, ward_id)
                     
-                    if created:
-                        self.stdout.write(self.style.WARNING(f"Generated missing Seat dynamically: {seat}"))
+                    if seat_key not in seat_cache:
+                        seat, created = Seat.objects.get_or_create(
+                            seat_type=seat_type,
+                            county=county_id,
+                            constituency=constituency_id,
+                            ward=ward_id,
+                            defaults={
+                                'level': level,
+                                'name': f"{seat_type.title()} {level}"
+                            }
+                        )
+                        seat_cache[seat_key] = seat
+                        if created:
+                            self.stdout.write(self.style.WARNING(f"Generated missing Seat dynamically: {seat}"))
+                    
+                    seat = seat_cache[seat_key]
 
-                    # Create Candidate
-                    Candidate.objects.create(
+                    candidates_to_create.append(Candidate(
                         seat=seat,
                         full_name=full_name,
                         party=party
-                    )
-                    success_count += 1
+                    ))
                     
-                # ---------------------------------------------------------
-                # THE EXCEPT BLOCK - Catches the explosion
-                # ---------------------------------------------------------
+                    if len(candidates_to_create) >= 1000:
+                        Candidate.objects.bulk_create(candidates_to_create)
+                        candidates_to_create = []
+                    
                 except Exception as e:
-                    self.stderr.write(self.style.ERROR(f"Skipped Row {row_num} ({full_name}): {str(e)}"))
-                    skip_count += 1
-                    continue # Jump to the next row!
+                    self.stderr.write(self.style.ERROR(f"Skipped Row {row_num}: {str(e)}"))
+                    continue
 
-        self.stdout.write(self.style.SUCCESS(f"Successfully loaded {success_count} candidates. Skipped {skip_count} errors."))
+            if candidates_to_create:
+                Candidate.objects.bulk_create(candidates_to_create)
+
+        total_final = Candidate.objects.count()
+        self.stdout.write(self.style.SUCCESS(f"Successfully synchronized candidates. Total in DB: {total_final}"))

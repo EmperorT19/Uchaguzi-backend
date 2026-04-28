@@ -1817,7 +1817,7 @@ def summarize_candidate(request):
         """
         
         # Use standard gemini model
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         
         return Response({"summary": response.text.strip()}, status=200)
