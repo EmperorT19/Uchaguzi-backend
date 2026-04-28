@@ -5,6 +5,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.core.mail import send_mail
 from django.conf import settings
+from django.contrib.auth.hashers import make_password, check_password
 # Create your views here.
 from.models import *
 from django.db.utils import IntegrityError
