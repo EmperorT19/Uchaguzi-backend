@@ -18,7 +18,7 @@ TS_PATH = r"c:\Users\Emperor\Desktop\New stuff\Chagua\Uchaguzi-Frontend\src\app\
 print("Parsing registration.ts to extract geographic data...")
 try:
     with open(TS_PATH, 'r', encoding='utf-8') as f:
-        content = f.read()
+        lines = f.readlines()
 except FileNotFoundError:
     print(f"ERROR: Could not find {TS_PATH}")
     sys.exit(1)
@@ -27,27 +27,43 @@ counties = []
 constituencies = []
 wards = []
 
-# Regex to safely parse the nested JS array objects, even if slightly malformed
-county_regex = re.finditer(r"\{\s*id:\s*(\d+),\s*name:\s*(?:'|\")([^'\"]+)(?:'|\")\s*\}", content.split('filteredConstituencies')[0])
-for match in county_regex:
-    counties.append({'id': int(match.group(1)), 'name': match.group(2)})
+# Improved regex patterns
+county_pattern = re.compile(r"id:\s*(\d+),\s*name:\s*['\"](.+?)['\"]")
+constit_pattern = re.compile(r"id:\s*(\d+),\s*name:\s*['\"](.+?)['\"],\s*countyId:\s*(\d+)")
+ward_pattern = re.compile(r"id:\s*(\d+),\s*name:\s*['\"](.+?)['\"],\s*constituencyId:\s*(\d+)")
 
-constit_text = content.split("wards = ")[0]
-constit_regex = re.finditer(r"\{\s*id:\s*(\d+),\s*name:\s*(?:'|\")([^'\"]+)(?:'|\"),\s*countyId:\s*(\d+)\s*\}", constit_text)
-for match in constit_regex:
-    constituencies.append({
-        'id': int(match.group(1)), 
-        'name': match.group(2), 
-        'countyId': int(match.group(3))
-    })
+for line in lines:
+    clean_line = line.strip()
+    if clean_line.startswith("//") or not clean_line:
+        continue
+    
+    # Try constituencies first (more specific)
+    constit_match = constit_pattern.search(clean_line)
+    if constit_match:
+        constituencies.append({
+            'id': int(constit_match.group(1)),
+            'name': constit_match.group(2).replace("\\'", "'"),
+            'countyId': int(constit_match.group(3))
+        })
+        continue
 
-ward_regex = re.finditer(r"\{\s*id:\s*(\d+),\s*name:\s*(?:'|\")([^'\"]+)(?:'|\"),\s*constituencyId:\s*(\d+)\s*\}", content)
-for match in ward_regex:
-    wards.append({
-        'id': int(match.group(1)), 
-        'name': match.group(2), 
-        'constituencyId': int(match.group(3))
-    })
+    # Try wards
+    ward_match = ward_pattern.search(clean_line)
+    if ward_match:
+        wards.append({
+            'id': int(ward_match.group(1)),
+            'name': ward_match.group(2).replace("\\'", "'"),
+            'constituencyId': int(ward_match.group(3))
+        })
+        continue
+
+    # Try counties
+    county_match = county_pattern.search(clean_line)
+    if county_match:
+        counties.append({
+            'id': int(county_match.group(1)),
+            'name': county_match.group(2).replace("\\'", "'")
+        })
 
 print(f"Extracted: {len(counties)} Counties, {len(constituencies)} Constituencies, {len(wards)} Wards")
 
