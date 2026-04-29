@@ -1555,20 +1555,26 @@ def login(request):
         return Response({"message": "ID number and password are required"}, status=400)
 
     try:
-        voter = Voter.objects.get(id_number=id_number)
-    except Voter.DoesNotExist:
-        return Response({"message": "Invalid credentials"}, status=401)
+        # Optimized lookup
+        voter = Voter.objects.filter(id_number=id_number).only(
+            'id', 'full_name', 'voter_code', 'id_number', 'county', 'constituency', 'ward', 'password_hash'
+        ).first()
+        
+        if not voter:
+            return Response({"message": "Invalid credentials"}, status=401)
+            
+    except Exception as e:
+        return Response({"message": f"Database error: {str(e)}"}, status=500)
 
     if not check_password(password, voter.password_hash):
         return Response({"message": "Invalid credentials"}, status=401)
 
-    requires_password_change = check_password(voter.voter_code, voter.password_hash)
-
-    voted_seats = Vote.objects.filter(voter=voter).values_list('seat__seat_type', flat=True)
+    # Optimization: Get only the seat types instead of full objects
+    voted_seats = list(Vote.objects.filter(voter_id=voter.id).values_list('seat__seat_type', flat=True))
 
     return Response({
         "message": "Login successful",
-        "requires_password_change": requires_password_change,
+        "requires_password_change": check_password(voter.voter_code, voter.password_hash),
         "user": {
             "id": voter.id,
             "full_name": voter.full_name,
@@ -1577,7 +1583,7 @@ def login(request):
             "county": voter.county,
             "constituency": voter.constituency,
             "ward": voter.ward,
-            "has_voted": list(voted_seats)
+            "has_voted": voted_seats
         }
     }, status=200)
 
@@ -1680,9 +1686,28 @@ KENYA_COUNTIES = {
 }
 
 def get_formatted_seat_name(seat):
+    if not seat: return "Unknown Seat"
+    
+    role = seat.seat_type.replace('_', ' ').title()
+    if seat.seat_type == 'mp': role = 'Member of Parliament'
+    if seat.seat_type == 'mca': role = 'Member of County Assembly'
+
+    if seat.level == 'National':
+        return f"{role} of Kenya"
+    
     if seat.level == 'County' and seat.county:
         county_name = KENYA_COUNTIES.get(int(seat.county), f"County {seat.county}")
-        return f"{seat.seat_type} for {county_name} County"
+        return f"{role} for {county_name} County"
+        
+    if seat.level == 'Constituency' and seat.constituency:
+        # Assuming seat.name contains the constituency name if it's formatted as "MP - [Name]"
+        area = seat.name.replace('MP - ', '').strip()
+        return f"{role} for {area} Constituency"
+        
+    if seat.level == 'Ward' and seat.ward:
+        area = seat.name.replace('MCA - ', '').strip()
+        return f"{role} for {area} Ward"
+        
     return seat.name
 
 @api_view(["GET"])
@@ -1803,20 +1828,27 @@ def summarize_candidate(request):
             
         candidate = Candidate.objects.select_related('seat').get(id=candidate_id)
         
+        # Check API Key
+        current_key = os.environ.get("GEMINI_API_KEY", "")
+        if not current_key or len(current_key) < 10:
+             return Response({"summary": f"AI summarization is unavailable. {candidate.full_name} is representing {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat."}, status=200)
+
+        genai.configure(api_key=current_key)
+        
         prompt = f"""
         You are an impartial election guide for the Kenyan 'Uchaguzi' digital voting system. 
         Write a very concise, neutral 2-sentence summary introducing the following candidate.
         Name: {candidate.full_name}
         Party: {candidate.party}
-        Running for: {get_formatted_seat_name(candidate.seat)} ({candidate.seat.seat_type})
-        Manifesto Details: {candidate.manifesto or ''}
+        Running for: {get_formatted_seat_name(candidate.seat)}
+        Manifesto Details: {candidate.manifesto or 'General development and leadership.'}
         
         Instructions:
-        1. If '{candidate.full_name}' is a universally known, real-world political figure (e.g., a real Kenyan Presidential candidate like William Ruto or Raila Odinga), DO NOT output a generic summary. Instead, use your extensive real-world knowledge to neutrally summarize their actual historical political platform, their current agenda, and what they are famous for.
-        2. If '{candidate.full_name}' is a fictional or unknown local name, do not invent facts. Just summarize what a candidate in the role of {candidate.seat.name} generally aims to achieve for their constituents.
+        1. If '{candidate.full_name}' is a universally known, real-world political figure, use your real-world knowledge to neutrally summarize their actual historical political platform.
+        2. If unknown, do not invent facts. Just summarize what a candidate in the role of {candidate.seat.name} generally aims to achieve.
+        3. KEEP IT TO EXACTLY 2 SENTENCES.
         """
         
-        # Use standard gemini model
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         
@@ -1825,9 +1857,11 @@ def summarize_candidate(request):
     except Candidate.DoesNotExist:
         return Response({"error": "Candidate not found"}, status=404)
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return Response({"error": f"AI Generation failed: {str(e)}"}, status=500)
+        # Fallback to non-AI summary if API fails
+        return Response({
+            "summary": f"{candidate.full_name} from {candidate.party} is a candidate for {get_formatted_seat_name(candidate.seat)}. They are focused on community representation and legislative oversight.",
+            "warning": f"AI Generation failed: {str(e)}"
+        }, status=200)
 
 
 @api_view(["POST"])
@@ -2035,22 +2069,41 @@ from django.db.models import Count
 
 @api_view(["GET"])
 def get_all_leaders(request):
-    seats = Seat.objects.all()
+    """
+    Returns the leading candidate for every seat in the system.
+    If no votes have been cast, it returns the first candidate alphabetically.
+    """
+    seats = Seat.objects.all().prefetch_related('candidates')
     results = []
+    
     for seat in seats:
-        leader = Vote.objects.filter(seat=seat).values(
-            'candidate__full_name', 'candidate__party'
+        # Try to find a leader by vote count
+        leader_data = Vote.objects.filter(seat=seat).values(
+            'candidate_id', 'candidate__full_name', 'candidate__party'
         ).annotate(votes=Count('id')).order_by('-votes').first()
         
-        if leader:
+        if leader_data:
             results.append({
-                'seat_name': seat.name,
+                'seat_name': get_formatted_seat_name(seat),
                 'seat_type': seat.seat_type,
                 'level': seat.level,
-                'leader_name': leader['candidate__full_name'],
-                'leader_party': leader['candidate__party'],
-                'votes': leader['votes']
+                'leader_name': leader_data['candidate__full_name'],
+                'leader_party': leader_data['candidate__party'],
+                'votes': leader_data['votes']
             })
+        else:
+            # If no votes, show the first candidate as "Potential Leader"
+            first_candidate = seat.candidates.first()
+            if first_candidate:
+                results.append({
+                    'seat_name': get_formatted_seat_name(seat),
+                    'seat_type': seat.seat_type,
+                    'level': seat.level,
+                    'leader_name': first_candidate.full_name,
+                    'leader_party': first_candidate.party,
+                    'votes': 0
+                })
+                
     return Response(results, status=200)
 
 @api_view(["GET"])
