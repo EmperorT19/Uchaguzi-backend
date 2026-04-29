@@ -1704,12 +1704,15 @@ def get_formatted_seat_name(seat):
         return f"{role} for {county_name} County"
         
     if seat.level == 'Constituency' and seat.constituency:
-        # Assuming seat.name contains the constituency name if it's formatted as "MP - [Name]"
-        area = seat.name.replace('MP - ', '').strip()
+        # Handle both "MP - [Name]" and generic "Mp Constituency" names
+        area = seat.name.replace('MP - ', '').replace('Mp Constituency', '').strip()
+        if not area: area = f"Constituency {seat.constituency}"
         return f"{role} for {area} Constituency"
         
     if seat.level == 'Ward' and seat.ward:
-        area = seat.name.replace('MCA - ', '').strip()
+        # Handle both "MCA - [Name]" and generic "Mca Ward" names
+        area = seat.name.replace('MCA - ', '').replace('Mca Ward', '').strip()
+        if not area: area = f"Ward {seat.ward}"
         return f"{role} for {area} Ward"
         
     return seat.name
@@ -1958,11 +1961,26 @@ def admin_candidate_add(request):
     region_name = request.data.get('region_name', '').strip()
     
     if seat_type in ['governor', 'senator', 'woman_rep'] and region_name:
-        seat = Seat.objects.filter(seat_type=seat_type, county__iexact=region_name).first()
+        # Resolve regional names to IDs if possible, or try direct filtering
+        # Since county is an IntegerField, we try to match it as an ID if region_name is numeric
+        try:
+            c_id = int(region_name)
+            seat = Seat.objects.filter(seat_type=seat_type, county=c_id).first()
+        except ValueError:
+            # If it's a name, we might need a lookup, but for now let's try a contains search on the name field
+            seat = Seat.objects.filter(seat_type=seat_type, name__icontains=region_name).first()
     elif seat_type == 'mp' and region_name:
-        seat = Seat.objects.filter(seat_type=seat_type, constituency__iexact=region_name).first()
+        try:
+            c_id = int(region_name)
+            seat = Seat.objects.filter(seat_type=seat_type, constituency=c_id).first()
+        except ValueError:
+            seat = Seat.objects.filter(seat_type=seat_type, name__icontains=region_name).first()
     elif seat_type == 'mca' and region_name:
-        seat = Seat.objects.filter(seat_type=seat_type, ward__iexact=region_name).first()
+        try:
+            w_id = int(region_name)
+            seat = Seat.objects.filter(seat_type=seat_type, ward=w_id).first()
+        except ValueError:
+            seat = Seat.objects.filter(seat_type=seat_type, name__icontains=region_name).first()
     else:
         seat = Seat.objects.filter(seat_type=seat_type).first()
 
@@ -2178,41 +2196,49 @@ PROVINCE_TO_COUNTY = {
 
 @api_view(["GET"])
 def get_all_candidates_analysis(request):
+    """
+    Optimized Analytics Engine:
+    Uses conditional aggregation to fetch all candidate vote counts in a single efficient query.
+    Ensures 'concurrency' by not blocking workers with thousands of individual DB hits.
+    """
     province = request.query_params.get('province')
     county_id = request.query_params.get('county')
     constituency_id = request.query_params.get('constituency')
     
-    # Synchronization fix: We must iterate over SEATS to show ALL candidates, even with 0 votes
-    seats = Seat.objects.all().prefetch_related('candidates')
+    from django.db.models import Count, Q, Prefetch
+
+    # Define the filter for the Vote count aggregation based on region
+    region_filter = Q()
+    if constituency_id:
+        region_filter = Q(votes__voter__constituency=constituency_id)
+    elif county_id:
+        region_filter = Q(votes__voter__county=county_id)
+    elif province and province in PROVINCE_TO_COUNTY:
+        counties = PROVINCE_TO_COUNTY[province]
+        region_filter = Q(votes__voter__county__in=counties)
+
+    # Fetch all candidates with annotated vote counts in one go
+    # We prefetch these onto the seats to keep the structure
+    candidate_qs = Candidate.objects.annotate(
+        vote_count=Count('votes', filter=region_filter)
+    ).select_related('seat')
+
+    seats = Seat.objects.all().prefetch_related(
+        Prefetch('candidates', queryset=candidate_qs)
+    )
     
     results = {}
-    
     for seat in seats:
         stype = seat.seat_type
         if stype not in results:
             results[stype] = []
             
-        # Get candidates for this seat
-        candidates = seat.candidates.all()
-        for cand in candidates:
-            # Get votes for this candidate with filters
-            votes_query = Vote.objects.filter(candidate=cand)
-            
-            if constituency_id:
-                votes_query = votes_query.filter(voter__constituency=constituency_id)
-            elif county_id:
-                votes_query = votes_query.filter(voter__county=county_id)
-            elif province and province in PROVINCE_TO_COUNTY:
-                counties = PROVINCE_TO_COUNTY[province]
-                votes_query = votes_query.filter(voter__county__in=counties)
-            
-            vote_count = votes_query.count()
-            
+        for cand in seat.candidates.all():
             results[stype].append({
                 'seat_name': get_formatted_seat_name(seat),
                 'candidate': cand.full_name,
                 'party': cand.party,
-                'votes': vote_count,
+                'votes': cand.vote_count,
                 'seat_level': seat.level
             })
             

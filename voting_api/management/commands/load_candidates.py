@@ -63,6 +63,17 @@ class Command(BaseCommand):
                     seat_key = (seat_type, county_id, constituency_id, ward_id)
                     
                     if seat_key not in seat_cache:
+                        # Create descriptive names for regional seats
+                        seat_name = f"{seat_type.title()} {level}"
+                        if level == 'County' and county_id:
+                            seat_name = f"{seat_type.title()} for County {county_id}"
+                        elif level == 'Constituency' and constituency_id:
+                            seat_name = f"{seat_type.title()} for Constituency {constituency_id}"
+                        elif level == 'Ward' and ward_id:
+                            seat_name = f"{seat_type.title()} for Ward {ward_id}"
+                        elif level == 'National':
+                            seat_name = f"{seat_type.title()} of Kenya"
+
                         seat, created = Seat.objects.get_or_create(
                             seat_type=seat_type,
                             county=county_id,
@@ -70,7 +81,7 @@ class Command(BaseCommand):
                             ward=ward_id,
                             defaults={
                                 'level': level,
-                                'name': f"{seat_type.title()} {level}"
+                                'name': seat_name
                             }
                         )
                         seat_cache[seat_key] = seat
