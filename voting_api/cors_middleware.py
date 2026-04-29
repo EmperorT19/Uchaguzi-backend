@@ -1,7 +1,9 @@
 class CorsMiddleware:
     """
-    Simple custom CORS middleware that adds headers to every response.
-    This bypasses django-cors-headers entirely.
+    Production Security Layer:
+    Handles Cross-Origin Resource Sharing (CORS) to allow the Netlify frontend 
+    to securely communicate with the Railway backend.
+    This bypasses django-cors-headers for faster processing.
     """
     def __init__(self, get_response):
         self.get_response = get_response

@@ -1,3 +1,5 @@
+# Optimized Candidate Seeding Script: 
+# Uses bulk_create to import ~15,000 regional candidates without database timeouts.
 import csv
 import os
 from django.core.management.base import BaseCommand
