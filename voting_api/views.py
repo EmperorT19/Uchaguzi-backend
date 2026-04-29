@@ -1830,8 +1830,8 @@ genai.configure(api_key=api_key)
 def summarize_candidate(request):
     """
     AI Candidate Analysis: 
-    Uses Google Gemini 1.5 Flash to generate objective introductory summaries.
-    Includes a 'Knowledge Fallback' if the API is offline or key is invalid.
+    Uses Google Gemini to generate context-rich, data-driven candidate summaries.
+    Includes live vote counts and competitive standing for dynamic output.
     """
     try:
         candidate_id = request.data.get("candidate_id")
@@ -1840,33 +1840,70 @@ def summarize_candidate(request):
             
         candidate = Candidate.objects.select_related('seat').get(id=candidate_id)
         
+        # Gather live election data for context
+        from django.db.models import Count
+        candidate_votes = Vote.objects.filter(candidate=candidate).count()
+        seat_votes = Vote.objects.filter(seat=candidate.seat).count()
+        
+        # Get competitors in the same seat
+        competitors = Candidate.objects.filter(seat=candidate.seat).annotate(
+            vote_count=Count('votes')
+        ).order_by('-vote_count')[:5]
+        
+        competitor_info = []
+        rank = 1
+        candidate_rank = 0
+        for c in competitors:
+            if c.id == candidate.id:
+                candidate_rank = rank
+            competitor_info.append(f"{rank}. {c.full_name} ({c.party}) - {c.vote_count} votes")
+            rank += 1
+        
+        vote_share = f"{(candidate_votes/seat_votes*100):.1f}%" if seat_votes > 0 else "N/A (no votes cast yet)"
+        ranking_text = f"Currently ranked #{candidate_rank} of {competitors.count()} candidates" if candidate_rank > 0 else "Ranking unavailable"
+        
         # Check API Key
         current_key = os.environ.get("GEMINI_API_KEY", "")
         if not current_key or len(current_key) < 10:
-             return Response({"summary": f"AI summarization is unavailable. {candidate.full_name} is representing {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat."}, status=200)
+             # Enhanced fallback without AI
+             fallback = f"{candidate.full_name} represents {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat."
+             if candidate_votes > 0:
+                 fallback += f" They have received {candidate_votes} vote(s) so far, capturing {vote_share} of the vote share. {ranking_text}."
+             else:
+                 fallback += f" Voting is still ongoing — no votes recorded for this candidate yet."
+             return Response({"summary": fallback}, status=200)
 
         genai.configure(api_key=current_key)
         
         prompt = f"""
-        You are a highly intelligent, impartial political analyst for the Kenyan 'Uchaguzi' system.
+        You are a brilliant, impartial Kenyan political analyst for the 'Uchaguzi' digital election platform.
         
-        TASK: Write a unique, engaging, and factual 2-sentence introduction for the candidate below.
+        TASK: Write a vivid, data-driven 3-sentence candidate profile.
         
-        Candidate Details:
-        - Name: {candidate.full_name}
-        - Party: {candidate.party}
-        - Seat: {get_formatted_seat_name(candidate.seat)}
-        - Provided Manifesto: {candidate.manifesto or 'Focused on general community development.'}
+        === CANDIDATE PROFILE ===
+        Name: {candidate.full_name}
+        Party: {candidate.party}
+        Seat: {get_formatted_seat_name(candidate.seat)}
+        Level: {candidate.seat.level} ({candidate.seat.seat_type})
+        Manifesto: {candidate.manifesto or 'Community development and public service.'}
         
-        CREATIVITY GUIDELINES:
-        1. REAL-WORLD DATA: If '{candidate.full_name}' is a prominent real-world Kenyan politician (e.g., Ruto, Raila, Kalonzo, Gachagua), use your internal training data to mention their actual political history, key achievements, or public reputation. DO NOT provide a generic response for famous people.
-        2. DYNAMISM: Vary your sentence structure. Do not start every summary with "[Name] is...". Use phrases like "Representing [Party], [Name] brings...", or "A key figure in [Party], [Name] aims to..."
-        3. BE SPECIFIC: Use the seat level ({candidate.seat.level}) to describe their responsibilities (e.g., 'legislative oversight' for MP, 'grassroots development' for MCA).
+        === LIVE ELECTION DATA ===
+        Votes received: {candidate_votes}
+        Total votes in this race: {seat_votes}
+        Vote share: {vote_share}
+        {ranking_text}
         
-        STRICT RULES:
-        - EXACTLY 2 sentences. 
-        - Neutral and objective tone.
-        - No bullet points.
+        Current standings in this seat:
+        {chr(10).join(competitor_info) if competitor_info else 'No competitors found.'}
+        
+        === CREATIVE GUIDELINES ===
+        1. SENTENCE 1: If '{candidate.full_name}' is a real, prominent Kenyan politician (Ruto, Raila, Kalonzo, Mudavadi, Wetangula, etc.), use your training data to mention their actual history. Otherwise, introduce their party and seat.
+        2. SENTENCE 2: Use the LIVE ELECTION DATA above. Mention their current vote count, ranking, and vote share. Make it feel like a live newscast.
+        3. SENTENCE 3: Provide a forward-looking statement about what their victory or performance would mean for their region.
+        
+        STYLE: Vary sentence openers. Never start with just "[Name] is...". Use dynamic phrasing like "With {candidate_votes} votes and counting...", "Representing {candidate.party}'s vision...", "A formidable contender for...".
+        
+        STRICT: Exactly 3 sentences. Neutral tone. No bullet points. No asterisks.
         """
         
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -1877,10 +1914,18 @@ def summarize_candidate(request):
     except Candidate.DoesNotExist:
         return Response({"error": "Candidate not found"}, status=404)
     except Exception as e:
-        # Fallback to non-AI summary if API fails
+        # Data-enriched fallback
+        fallback = f"{candidate.full_name} from {candidate.party} is contesting for {get_formatted_seat_name(candidate.seat)}."
+        try:
+            if candidate_votes > 0:
+                fallback += f" With {candidate_votes} vote(s) ({vote_share} share), they are {ranking_text.lower()}."
+            else:
+                fallback += f" The race is still unfolding with no votes tallied for this candidate yet."
+        except:
+            pass
         return Response({
-            "summary": f"{candidate.full_name} from {candidate.party} is a candidate for {get_formatted_seat_name(candidate.seat)}. They are focused on community representation and legislative oversight.",
-            "warning": f"AI Generation failed: {str(e)}"
+            "summary": fallback,
+            "warning": f"AI unavailable: {str(e)}"
         }, status=200)
 
 
@@ -1916,7 +1961,20 @@ def admin_voters(request):
 
 @api_view(["GET"])
 def admin_candidates(request):
-    candidates = Candidate.objects.select_related('seat').all().order_by('seat__seat_type', 'full_name')
+    seat_type = request.query_params.get('seat_type', '')
+    search = request.query_params.get('search', '')
+    
+    qs = Candidate.objects.select_related('seat').all().order_by('seat__seat_type', 'full_name')
+    
+    if seat_type:
+        qs = qs.filter(seat__seat_type=seat_type)
+    if search:
+        qs = qs.filter(full_name__icontains=search)
+    
+    # Return count for display, but limit actual results to 200
+    total = qs.count()
+    candidates = qs[:200]
+    
     data = [{
         'id': c.id,
         'full_name': c.full_name,
@@ -1925,7 +1983,7 @@ def admin_candidates(request):
         'seat_level': c.seat.level,
         'seat_type': c.seat.seat_type
     } for c in candidates]
-    return Response(data, status=200)
+    return Response(data, status=200, headers={'X-Total-Count': str(total)})
 
 @api_view(["GET"])
 def admin_votes(request):
@@ -2031,31 +2089,67 @@ def admin_voter_reset_password(request, id):
 
 from django.core.management import call_command
 from io import StringIO
+import threading
+
+# Global flag to track seeding status
+_seeding_status = {"running": False, "message": "", "error": ""}
 
 @api_view(['POST'])
 @csrf_exempt
 def force_load_candidates(request):
+    global _seeding_status
+    
     key = request.data.get("admin_key", "")
     if key != "IEBC2026":
         return Response({"error": "Unauthorized. Invalid Admin Key."}, status=401)
-        
-    out = StringIO()
-    err = StringIO()
-    try:
-        # Use absolute path
-        csv_path = os.path.join(settings.BASE_DIR, 'test_candidates.csv')
-        call_command('load_candidates', csv_path, force=True, stdout=out, stderr=err)
+    
+    if _seeding_status["running"]:
         return Response({
-            "stdout": out.getvalue(),
-            "stderr": err.getvalue(),
-            "message": "Bulk candidate seeding completed successfully."
-        })
-    except Exception as e:
-        return Response({
-            "error": str(e),
-            "stdout": out.getvalue(),
-            "stderr": err.getvalue()
-        }, status=500)
+            "message": "Seeding is already in progress. Please wait...",
+            "status": "running"
+        }, status=200)
+    
+    def run_seeding():
+        global _seeding_status
+        _seeding_status = {"running": True, "message": "Seeding started...", "error": ""}
+        out = StringIO()
+        err = StringIO()
+        try:
+            csv_path = os.path.join(settings.BASE_DIR, 'test_candidates.csv')
+            call_command('load_candidates', csv_path, force=True, stdout=out, stderr=err)
+            _seeding_status = {
+                "running": False, 
+                "message": f"Completed! {out.getvalue()}", 
+                "error": err.getvalue()
+            }
+        except Exception as e:
+            _seeding_status = {
+                "running": False, 
+                "message": "", 
+                "error": f"Failed: {str(e)} | {err.getvalue()}"
+            }
+
+    # Launch in background thread — HTTP response returns IMMEDIATELY
+    thread = threading.Thread(target=run_seeding, daemon=True)
+    thread.start()
+    
+    return Response({
+        "message": "Candidate seeding started in background. Check status in ~30 seconds.",
+        "status": "started"
+    }, status=202)
+
+
+@api_view(['GET'])
+def force_load_candidates_status(request):
+    """Check the status of an ongoing seeding operation."""
+    global _seeding_status
+    total_candidates = Candidate.objects.count()
+    total_seats = Seat.objects.count()
+    return Response({
+        **_seeding_status,
+        "total_candidates": total_candidates,
+        "total_seats": total_seats
+    }, status=200)
 
 @api_view(["DELETE"])
 def admin_candidate_delete_all(request):
@@ -2107,67 +2201,71 @@ from django.db.models import Count
 @api_view(["GET"])
 def get_all_leaders(request):
     """
-    Returns the leading candidate for every unique seat that has at least one candidate.
-    Optimized to use a single database query for all vote counts.
+    Returns election leaders for all seats that have received votes,
+    plus one representative entry for each seat type with no votes yet.
+    Optimized: single query for vote counts, avoids iterating all ~300+ seats.
     """
-    from django.db.models import Max, Q
-    
-    # 1. Get all candidates who have votes, grouped by seat
+    # 1. Get actual vote leaders — only seats that have received votes
     voted_leaders = Vote.objects.values(
-        'seat_id', 'candidate_id', 'candidate__full_name', 'candidate__party'
+        'seat_id', 'seat__seat_type', 'seat__level', 'seat__name',
+        'seat__county', 'seat__constituency', 'seat__ward',
+        'candidate_id', 'candidate__full_name', 'candidate__party'
     ).annotate(
         votes_count=Count('id')
     ).order_by('seat_id', '-votes_count')
 
-    # 2. Extract the top candidate for each seat
-    seat_leaders = {}
+    # 2. Extract the top candidate per seat (dedup by seat_id)
+    seen_seats = set()
+    results = []
+    seat_types_with_votes = set()
+    
     for vl in voted_leaders:
         sid = vl['seat_id']
-        if sid not in seat_leaders:
-            seat_leaders[sid] = {
-                'leader_name': vl['candidate__full_name'],
-                'leader_party': vl['candidate__party'],
-                'votes': vl['votes_count']
-            }
-
-    # 3. Fetch all seats to match names and types
-    # We filter for seats that either have a leader (voted) or just have candidates (potential)
-    seats = Seat.objects.all().prefetch_related('candidates')
-    
-    results = []
-    for seat in seats:
-        seat_data = {
-            'seat_name': get_formatted_seat_name(seat),
-            'seat_type': seat.seat_type,
-            'level': seat.level,
-            'leader_name': 'No Candidate',
-            'leader_party': '-',
-            'votes': 0
-        }
+        if sid in seen_seats:
+            continue
+        seen_seats.add(sid)
+        seat_types_with_votes.add(vl['seat__seat_type'])
         
-        if seat.id in seat_leaders:
-            leader = seat_leaders[seat.id]
-            seat_data.update({
-                'leader_name': leader['leader_name'],
-                'leader_party': leader['leader_party'],
-                'votes': leader['votes']
+        # Build a temporary seat object for formatting
+        class TmpSeat:
+            pass
+        tmp = TmpSeat()
+        tmp.seat_type = vl['seat__seat_type']
+        tmp.county = vl['seat__county']
+        tmp.constituency = vl['seat__constituency']
+        tmp.ward = vl['seat__ward']
+        tmp.name = vl['seat__name']
+        tmp.level = vl['seat__level']
+        
+        results.append({
+            'seat_name': get_formatted_seat_name(tmp),
+            'seat_type': vl['seat__seat_type'],
+            'level': vl['seat__level'],
+            'leader_name': vl['candidate__full_name'],
+            'leader_party': vl['candidate__party'],
+            'votes': vl['votes_count']
+        })
+
+    # 3. For seat types with NO votes at all, show one representative entry
+    all_seat_types = ['president', 'governor', 'senator', 'mp', 'woman_rep', 'mca']
+    missing_types = [st for st in all_seat_types if st not in seat_types_with_votes]
+    
+    for st in missing_types:
+        seat = Seat.objects.filter(seat_type=st).first()
+        if seat:
+            first_c = Candidate.objects.filter(seat=seat).first()
+            results.append({
+                'seat_name': get_formatted_seat_name(seat),
+                'seat_type': st,
+                'level': seat.level,
+                'leader_name': first_c.full_name if first_c else 'No candidates loaded',
+                'leader_party': first_c.party if first_c else '-',
+                'votes': 0
             })
-        else:
-            # Fallback to first candidate if no votes cast yet
-            first_c = seat.candidates.first()
-            if first_c:
-                seat_data.update({
-                    'leader_name': first_c.full_name,
-                    'leader_party': first_c.party,
-                    'votes': 0
-                })
-            else:
-                continue # Skip seats with no candidates
 
-        results.append(seat_data)
-
-    # Sort results by level and seat type for better admin UX
-    results.sort(key=lambda x: (x['level'], x['seat_type']))
+    # Sort: seats with votes first, then by level
+    level_order = {'National': 0, 'County': 1, 'Constituency': 2, 'Ward': 3}
+    results.sort(key=lambda x: (0 if x['votes'] > 0 else 1, level_order.get(x['level'], 9), x['seat_type']))
     
     return Response(results, status=200)
 
