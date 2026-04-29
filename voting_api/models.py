@@ -136,7 +136,8 @@ from django.db import models
 
 
 # =========================
-# Voter Model
+# Voter Model: Stores localized regional data to ensure users see 
+# their correct County/Constituency/Ward candidates.
 # =========================
 class Voter(models.Model):
     id = models.BigAutoField(primary_key=True)
@@ -162,7 +163,8 @@ class Voter(models.Model):
 
 
 # =========================
-# Seat Model
+# Seat Model: Defines levels (National, County, Ward) and 
+# types (President, Governor, MCA, etc.)
 # =========================
 class Seat(models.Model):
     SEAT_TYPES = [
@@ -207,7 +209,8 @@ class Seat(models.Model):
 
 
 # =========================
-# Candidate Model
+# Candidate Model: Linked to a Seat and contains biographical data 
+# used for AI summaries and ballots.
 # =========================
 class Candidate(models.Model):
     id = models.BigAutoField(primary_key=True)
@@ -232,7 +235,8 @@ class Candidate(models.Model):
 
 
 # =========================
-# Vote Model
+# Vote Model: Records every cast ballot with a timestamp 
+# for transparent, real-time election tracking.
 # =========================
 class Vote(models.Model):
     id = models.BigAutoField(primary_key=True)
