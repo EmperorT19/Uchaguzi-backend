@@ -2107,40 +2107,68 @@ from django.db.models import Count
 @api_view(["GET"])
 def get_all_leaders(request):
     """
-    Returns the leading candidate for every seat in the system.
-    If no votes have been cast, it returns the first candidate alphabetically.
+    Returns the leading candidate for every unique seat that has at least one candidate.
+    Optimized to use a single database query for all vote counts.
     """
-    seats = Seat.objects.all().prefetch_related('candidates')
-    results = []
+    from django.db.models import Max, Q
     
+    # 1. Get all candidates who have votes, grouped by seat
+    voted_leaders = Vote.objects.values(
+        'seat_id', 'candidate_id', 'candidate__full_name', 'candidate__party'
+    ).annotate(
+        votes_count=Count('id')
+    ).order_by('seat_id', '-votes_count')
+
+    # 2. Extract the top candidate for each seat
+    seat_leaders = {}
+    for vl in voted_leaders:
+        sid = vl['seat_id']
+        if sid not in seat_leaders:
+            seat_leaders[sid] = {
+                'leader_name': vl['candidate__full_name'],
+                'leader_party': vl['candidate__party'],
+                'votes': vl['votes_count']
+            }
+
+    # 3. Fetch all seats to match names and types
+    # We filter for seats that either have a leader (voted) or just have candidates (potential)
+    seats = Seat.objects.all().prefetch_related('candidates')
+    
+    results = []
     for seat in seats:
-        # Try to find a leader by vote count
-        leader_data = Vote.objects.filter(seat=seat).values(
-            'candidate_id', 'candidate__full_name', 'candidate__party'
-        ).annotate(votes=Count('id')).order_by('-votes').first()
+        seat_data = {
+            'seat_name': get_formatted_seat_name(seat),
+            'seat_type': seat.seat_type,
+            'level': seat.level,
+            'leader_name': 'No Candidate',
+            'leader_party': '-',
+            'votes': 0
+        }
         
-        if leader_data:
-            results.append({
-                'seat_name': get_formatted_seat_name(seat),
-                'seat_type': seat.seat_type,
-                'level': seat.level,
-                'leader_name': leader_data['candidate__full_name'],
-                'leader_party': leader_data['candidate__party'],
-                'votes': leader_data['votes']
+        if seat.id in seat_leaders:
+            leader = seat_leaders[seat.id]
+            seat_data.update({
+                'leader_name': leader['leader_name'],
+                'leader_party': leader['leader_party'],
+                'votes': leader['votes']
             })
         else:
-            # If no votes, show the first candidate as "Potential Leader"
-            first_candidate = seat.candidates.first()
-            if first_candidate:
-                results.append({
-                    'seat_name': get_formatted_seat_name(seat),
-                    'seat_type': seat.seat_type,
-                    'level': seat.level,
-                    'leader_name': first_candidate.full_name,
-                    'leader_party': first_candidate.party,
+            # Fallback to first candidate if no votes cast yet
+            first_c = seat.candidates.first()
+            if first_c:
+                seat_data.update({
+                    'leader_name': first_c.full_name,
+                    'leader_party': first_c.party,
                     'votes': 0
                 })
-                
+            else:
+                continue # Skip seats with no candidates
+
+        results.append(seat_data)
+
+    # Sort results by level and seat type for better admin UX
+    results.sort(key=lambda x: (x['level'], x['seat_type']))
+    
     return Response(results, status=200)
 
 @api_view(["GET"])
@@ -2208,7 +2236,9 @@ def get_all_candidates_analysis(request):
 
     # Define the filter for the Vote count aggregation based on region
     region_filter = Q()
-    if constituency_id:
+    if ward_id:
+        region_filter = Q(votes__voter__ward=ward_id)
+    elif constituency_id:
         region_filter = Q(votes__voter__constituency=constituency_id)
     elif county_id:
         region_filter = Q(votes__voter__county=county_id)
