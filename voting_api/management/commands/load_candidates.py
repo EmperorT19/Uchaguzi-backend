@@ -64,15 +64,23 @@ class Command(BaseCommand):
                     
                     if seat_key not in seat_cache:
                         # Create descriptive names for regional seats
-                        seat_name = f"{seat_type.title()} {level}"
-                        if level == 'County' and county_id:
-                            seat_name = f"{seat_type.title()} for County {county_id}"
-                        elif level == 'Constituency' and constituency_id:
-                            seat_name = f"{seat_type.title()} for Constituency {constituency_id}"
-                        elif level == 'Ward' and ward_id:
-                            seat_name = f"{seat_type.title()} for Ward {ward_id}"
-                        elif level == 'National':
+                        if level == 'National':
                             seat_name = f"{seat_type.title()} of Kenya"
+                        elif level == 'County' and county_id:
+                            from voting_api.views import KENYA_COUNTIES
+                            county_name = KENYA_COUNTIES.get(int(county_id), f"County {county_id}")
+                            seat_name = f"{seat_type.replace('_', ' ').title()} for {county_name} County"
+                        elif level == 'Constituency' and constituency_id:
+                            from voting_api.mappings import CONSTITUENCY_LOOKUP
+                            area = CONSTITUENCY_LOOKUP.get(int(constituency_id), f"Constituency {constituency_id}")
+                            seat_name = f"{seat_type.replace('_', ' ').title()} for {area} Constituency"
+                        elif level == 'Ward' and ward_id:
+                            from voting_api.mappings import WARD_LOOKUP
+                            ward_info = WARD_LOOKUP.get(int(ward_id))
+                            area = ward_info[0] if ward_info else f"Ward {ward_id}"
+                            seat_name = f"{seat_type.replace('_', ' ').title()} for {area} Ward"
+                        else:
+                            seat_name = f"{seat_type.title()} {level}"
 
                         seat, created = Seat.objects.get_or_create(
                             seat_type=seat_type,

@@ -82,6 +82,12 @@ DATABASES = {
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
+CORS_ALLOW_HEADERS = ["*"]
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+APPEND_SLASH = False # Prevents redirects that can drop CORS headers
+CSRF_TRUSTED_ORIGINS = ["https://uchaguzi.netlify.app", "https://*.up.railway.app"]
 
 # ─── Password validation ───────────────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
