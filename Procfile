@@ -1,1 +1,1 @@
-web: python manage.py migrate && python manage.py load_candidates test_candidates.csv --force && gunicorn voting_backend.wsgi --bind 0.0.0.0:$PORT --timeout 300 --log-file -
+web: python manage.py collectstatic --noinput && python manage.py migrate && python manage.py load_candidates test_candidates.csv && gunicorn voting_backend.wsgi --bind 0.0.0.0:$PORT --timeout 300 --log-file -
