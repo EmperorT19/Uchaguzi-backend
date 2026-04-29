@@ -1921,7 +1921,7 @@ def admin_candidates(request):
         'id': c.id,
         'full_name': c.full_name,
         'party': c.party,
-        'seat_name': c.seat.name,
+        'seat_name': get_formatted_seat_name(c.seat),
         'seat_level': c.seat.level,
         'seat_type': c.seat.seat_type
     } for c in candidates]
@@ -2196,12 +2196,13 @@ PROVINCE_TO_COUNTY = {
 def get_all_candidates_analysis(request):
     """
     Optimized Analytics Engine:
-    Uses conditional aggregation to fetch all candidate vote counts in a single efficient query.
-    Ensures 'concurrency' by not blocking workers with thousands of individual DB hits.
+    Uses conditional aggregation to fetch candidate vote counts in a single efficient query.
+    Restricts scope to National + User's County/Constituency/Ward if provided.
     """
     province = request.query_params.get('province')
     county_id = request.query_params.get('county')
     constituency_id = request.query_params.get('constituency')
+    ward_id = request.query_params.get('ward')
     
     from django.db.models import Count, Q, Prefetch
 
@@ -2215,13 +2216,21 @@ def get_all_candidates_analysis(request):
         counties = PROVINCE_TO_COUNTY[province]
         region_filter = Q(votes__voter__county__in=counties)
 
-    # Fetch all candidates with annotated vote counts in one go
-    # We prefetch these onto the seats to keep the structure
+    # Seat filter: only show seats relevant to the provided region
+    seat_filter = Q(level='National')
+    if county_id:
+        seat_filter |= Q(level='County', county=county_id)
+    if constituency_id:
+        seat_filter |= Q(level='Constituency', constituency=constituency_id)
+    if ward_id:
+        seat_filter |= Q(level='Ward', ward=ward_id)
+
+    # Fetch candidates with annotated vote counts in one go
     candidate_qs = Candidate.objects.annotate(
         vote_count=Count('votes', filter=region_filter)
     ).select_related('seat')
 
-    seats = Seat.objects.all().prefetch_related(
+    seats = Seat.objects.filter(seat_filter).prefetch_related(
         Prefetch('candidates', queryset=candidate_qs)
     )
     
