@@ -1548,6 +1548,10 @@ def signup (request):
 @api_view(["POST"])
 @csrf_exempt
 def login(request):
+    """
+    Voter Authentication: Validates ID Number and Password.
+    Optimized to minimize DB load by using .only() for specific fields.
+    """
     id_number = request.data.get("id_number", "").strip()
     password = request.data.get("voter_code", "").strip()
 
@@ -1751,20 +1755,22 @@ from django.db.models import Count
 @api_view(["GET"])
 def get_results(request):
     """
-    Returns aggregated vote counts grouped by seat. Accepts optional area-based filtering.
+    Live Results Engine: 
+    Aggregates votes for National, County, Constituency, and Ward levels.
+    Prefetches candidates to avoid N+1 query performance bottlenecks.
     """
     county = request.query_params.get("county")
     constituency = request.query_params.get("constituency")
     ward = request.query_params.get("ward")
     seat_type = request.query_params.get("seat_type")
 
-    db_filter = models.Q(level='National')
+    db_filter = Q(level='National')
     if county:
-        db_filter |= models.Q(level='County', county=county)
+        db_filter |= Q(level='County', county=county)
     if constituency:
-        db_filter |= models.Q(level='Constituency', constituency=constituency)
+        db_filter |= Q(level='Constituency', constituency=constituency)
     if ward:
-        db_filter |= models.Q(level='Ward', ward=ward)
+        db_filter |= Q(level='Ward', ward=ward)
 
     from django.db.models import Count, Prefetch
 
@@ -1821,6 +1827,11 @@ genai.configure(api_key=api_key)
 @api_view(["POST"])
 @csrf_exempt
 def summarize_candidate(request):
+    """
+    AI Candidate Analysis: 
+    Uses Google Gemini 1.5 Flash to generate objective introductory summaries.
+    Includes a 'Knowledge Fallback' if the API is offline or key is invalid.
+    """
     try:
         candidate_id = request.data.get("candidate_id")
         if not candidate_id:
@@ -1836,17 +1847,25 @@ def summarize_candidate(request):
         genai.configure(api_key=current_key)
         
         prompt = f"""
-        You are an impartial election guide for the Kenyan 'Uchaguzi' digital voting system. 
-        Write a very concise, neutral 2-sentence summary introducing the following candidate.
-        Name: {candidate.full_name}
-        Party: {candidate.party}
-        Running for: {get_formatted_seat_name(candidate.seat)}
-        Manifesto Details: {candidate.manifesto or 'General development and leadership.'}
+        You are a highly intelligent, impartial political analyst for the Kenyan 'Uchaguzi' system.
         
-        Instructions:
-        1. If '{candidate.full_name}' is a universally known, real-world political figure, use your real-world knowledge to neutrally summarize their actual historical political platform.
-        2. If unknown, do not invent facts. Just summarize what a candidate in the role of {candidate.seat.name} generally aims to achieve.
-        3. KEEP IT TO EXACTLY 2 SENTENCES.
+        TASK: Write a unique, engaging, and factual 2-sentence introduction for the candidate below.
+        
+        Candidate Details:
+        - Name: {candidate.full_name}
+        - Party: {candidate.party}
+        - Seat: {get_formatted_seat_name(candidate.seat)}
+        - Provided Manifesto: {candidate.manifesto or 'Focused on general community development.'}
+        
+        CREATIVITY GUIDELINES:
+        1. REAL-WORLD DATA: If '{candidate.full_name}' is a prominent real-world Kenyan politician (e.g., Ruto, Raila, Kalonzo, Gachagua), use your internal training data to mention their actual political history, key achievements, or public reputation. DO NOT provide a generic response for famous people.
+        2. DYNAMISM: Vary your sentence structure. Do not start every summary with "[Name] is...". Use phrases like "Representing [Party], [Name] brings...", or "A key figure in [Party], [Name] aims to..."
+        3. BE SPECIFIC: Use the seat level ({candidate.seat.level}) to describe their responsibilities (e.g., 'legislative oversight' for MP, 'grassroots development' for MCA).
+        
+        STRICT RULES:
+        - EXACTLY 2 sentences. 
+        - Neutral and objective tone.
+        - No bullet points.
         """
         
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -1970,6 +1989,8 @@ def admin_voter_delete(request, id):
     try:
         Voter.objects.get(id=id).delete()
         return Response({"message": "Successfully deleted voter"}, status=200)
+    except Voter.DoesNotExist:
+        return Response({"error": "Voter not found"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
 
@@ -2000,23 +2021,22 @@ from io import StringIO
 def force_load_candidates(request):
     key = request.data.get("admin_key", "")
     if key != "IEBC2026":
-        return Response({"error": "Unauthorized"}, status=401)
+        return Response({"error": "Unauthorized. Invalid Admin Key."}, status=401)
         
     out = StringIO()
     err = StringIO()
     try:
-        # Use absolute path if possible or relative to BASE_DIR
+        # Use absolute path
         csv_path = os.path.join(settings.BASE_DIR, 'test_candidates.csv')
         call_command('load_candidates', csv_path, force=True, stdout=out, stderr=err)
         return Response({
             "stdout": out.getvalue(),
-            "stderr": err.getvalue()
+            "stderr": err.getvalue(),
+            "message": "Bulk candidate seeding completed successfully."
         })
     except Exception as e:
-        import traceback
         return Response({
             "error": str(e),
-            "traceback": traceback.format_exc(),
             "stdout": out.getvalue(),
             "stderr": err.getvalue()
         }, status=500)
@@ -2049,9 +2069,10 @@ def admin_voter_delete_all(request):
 def admin_voter_reset_password(request, id):
     try:
         voter = Voter.objects.get(id=id)
+        # Use the master password for reset
         voter.password_hash = make_password("IEBC2026!")
         voter.save()
-        return Response({"message": f"Password for {voter.full_name} reset to 'IEBC2026!'"}, status=200)
+        return Response({"message": f"Password for {voter.full_name} has been reset to IEBC2026!"}, status=200)
     except Voter.DoesNotExist:
         return Response({"error": "Voter not found"}, status=404)
     except Exception as e:
@@ -2161,37 +2182,43 @@ def get_all_candidates_analysis(request):
     county_id = request.query_params.get('county')
     constituency_id = request.query_params.get('constituency')
     
-    # Base query for all votes
-    votes_query = Vote.objects.all()
+    # Synchronization fix: We must iterate over SEATS to show ALL candidates, even with 0 votes
+    seats = Seat.objects.all().prefetch_related('candidates')
     
-    # Apply filters based on the voter's location
-    if constituency_id:
-        votes_query = votes_query.filter(voter__constituency=constituency_id)
-    elif county_id:
-        votes_query = votes_query.filter(voter__county=county_id)
-    elif province and province in PROVINCE_TO_COUNTY:
-        counties = PROVINCE_TO_COUNTY[province]
-        votes_query = votes_query.filter(voter__county__in=counties)
-        
-    # Group by seat and candidate
-    grouped_votes = votes_query.values(
-        'seat__name', 'seat__seat_type', 'seat__level',
-        'candidate__full_name', 'candidate__party'
-    ).annotate(votes=Count('id')).order_by('seat__seat_type', '-votes')
-    
-    # Format the response
     results = {}
-    for v in grouped_votes:
-        stype = v['seat__seat_type']
+    
+    for seat in seats:
+        stype = seat.seat_type
         if stype not in results:
             results[stype] = []
-        results[stype].append({
-            'seat_name': v['seat__name'],
-            'candidate': v['candidate__full_name'],
-            'party': v['candidate__party'],
-            'votes': v['votes'],
-            'seat_level': v['seat__level']
-        })
+            
+        # Get candidates for this seat
+        candidates = seat.candidates.all()
+        for cand in candidates:
+            # Get votes for this candidate with filters
+            votes_query = Vote.objects.filter(candidate=cand)
+            
+            if constituency_id:
+                votes_query = votes_query.filter(voter__constituency=constituency_id)
+            elif county_id:
+                votes_query = votes_query.filter(voter__county=county_id)
+            elif province and province in PROVINCE_TO_COUNTY:
+                counties = PROVINCE_TO_COUNTY[province]
+                votes_query = votes_query.filter(voter__county__in=counties)
+            
+            vote_count = votes_query.count()
+            
+            results[stype].append({
+                'seat_name': get_formatted_seat_name(seat),
+                'candidate': cand.full_name,
+                'party': cand.party,
+                'votes': vote_count,
+                'seat_level': seat.level
+            })
+            
+    # Sort results by votes descending within each seat type
+    for stype in results:
+        results[stype].sort(key=lambda x: x['votes'], reverse=True)
         
     return Response(results, status=200)
 
