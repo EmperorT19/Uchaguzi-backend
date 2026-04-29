@@ -10,6 +10,7 @@ from django.contrib.auth.hashers import make_password, check_password
 from.models import *
 from django.db.utils import IntegrityError
 from django.views.decorators.csrf import csrf_exempt
+from .mappings import WARD_LOOKUP, CONSTITUENCY_LOOKUP
 
 # ============================================================
 # Paste WARD_LOOKUP and get_candidates into views.py
@@ -1704,15 +1705,12 @@ def get_formatted_seat_name(seat):
         return f"{role} for {county_name} County"
         
     if seat.level == 'Constituency' and seat.constituency:
-        # Handle both "MP - [Name]" and generic "Mp Constituency" names
-        area = seat.name.replace('MP - ', '').replace('Mp Constituency', '').strip()
-        if not area: area = f"Constituency {seat.constituency}"
+        area = CONSTITUENCY_LOOKUP.get(int(seat.constituency), f"Constituency {seat.constituency}")
         return f"{role} for {area} Constituency"
         
     if seat.level == 'Ward' and seat.ward:
-        # Handle both "MCA - [Name]" and generic "Mca Ward" names
-        area = seat.name.replace('MCA - ', '').replace('Mca Ward', '').strip()
-        if not area: area = f"Ward {seat.ward}"
+        ward_info = WARD_LOOKUP.get(int(seat.ward))
+        area = ward_info[0] if ward_info else f"Ward {seat.ward}"
         return f"{role} for {area} Ward"
         
     return seat.name
@@ -1918,7 +1916,7 @@ def admin_voters(request):
 
 @api_view(["GET"])
 def admin_candidates(request):
-    candidates = Candidate.objects.select_related('seat').all().order_by('seat__seat_type', 'full_name')[:2000]
+    candidates = Candidate.objects.select_related('seat').all().order_by('seat__seat_type', 'full_name')
     data = [{
         'id': c.id,
         'full_name': c.full_name,
