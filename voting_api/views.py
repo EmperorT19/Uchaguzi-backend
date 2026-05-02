@@ -1971,9 +1971,9 @@ def admin_candidates(request):
     if search:
         qs = qs.filter(full_name__icontains=search)
     
-    # Return count for display, but limit actual results to 200
+    # Return count for display
     total = qs.count()
-    candidates = qs[:200]
+    candidates = qs
     
     data = [{
         'id': c.id,
