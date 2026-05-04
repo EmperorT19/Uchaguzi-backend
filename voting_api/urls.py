@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import *
+from .reports import *
 
 urlpatterns = [
     path("timo", index),
@@ -10,6 +11,7 @@ urlpatterns = [
     path("results", get_results),
     path("voter/status", voter_status),
     path("voter/change-password", change_password),
+    path("voter/forgot-password", forgot_password),
     path("candidate/summarize", summarize_candidate),
     path("system-admin/login", admin_login),
     path("system-admin/stats", admin_stats),
@@ -31,4 +33,9 @@ urlpatterns = [
     path("results/analysis/constituency/<int:constituency_id>", get_constituency_analysis),
     path("results/all_candidates", get_all_candidates_analysis),
     path("chat", chat_response),
+    path("system-admin/reports/election-results", admin_report_election_results),
+    path("system-admin/reports/voter-turnout", admin_report_voter_turnout),
+    path("system-admin/reports/registered-voters", admin_report_registered_voters),
+    path("system-admin/reports/audit-trail", admin_report_audit_trail),
+    path("system-admin/reports/candidate-performance", admin_report_candidate_performance),
 ]

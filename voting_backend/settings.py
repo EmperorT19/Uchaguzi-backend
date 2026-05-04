@@ -129,3 +129,6 @@ else:
     EMAIL_TIMEOUT = 3
     EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'muokijr@gmail.com')
     EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'mumq nheg yujn izte')
+
+# ─── AI Configuration ─────────────────────────────────────────────────────────
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyCwyxx2xdaLhLLVjykL-3QVtNXa4eKrcLk')

@@ -1574,12 +1574,16 @@ def login(request):
     if not check_password(password, voter.password_hash):
         return Response({"message": "Invalid credentials"}, status=401)
 
+    # Cache: Does the password match the original voter_code?
+    # If yes, user hasn't changed their default password yet.
+    requires_change = (password == voter.voter_code)
+
     # Optimization: Get only the seat types instead of full objects
     voted_seats = list(Vote.objects.filter(voter_id=voter.id).values_list('seat__seat_type', flat=True))
 
     return Response({
         "message": "Login successful",
-        "requires_password_change": check_password(voter.voter_code, voter.password_hash),
+        "requires_password_change": requires_change,
         "user": {
             "id": voter.id,
             "full_name": voter.full_name,
@@ -1631,6 +1635,67 @@ def change_password(request):
     voter.save()
 
     return Response({"message": "Password changed successfully"}, status=200)
+
+
+@api_view(["POST"])
+@csrf_exempt
+def forgot_password(request):
+    """
+    Self-Service Password Recovery:
+    Verifies voter identity via ID Number + registered email.
+    Generates a temporary password, emails it, and forces a 
+    password change on next login (reuses the existing voter_code
+    check in the login endpoint).
+    """
+    id_number = request.data.get("id_number", "").strip()
+    email = request.data.get("email", "").strip().lower()
+
+    if not id_number or not email:
+        return Response({"message": "ID number and email are required"}, status=400)
+
+    try:
+        voter = Voter.objects.get(id_number=id_number)
+    except Voter.DoesNotExist:
+        # Generic message to avoid confirming whether an ID exists
+        return Response({"message": "If the details match our records, a temporary password will be sent to your email."}, status=200)
+
+    # Check that the provided email matches the one on file
+    if not voter.email or voter.email.lower() != email:
+        return Response({"message": "If the details match our records, a temporary password will be sent to your email."}, status=200)
+
+    # Generate a temporary password (8 chars, alphanumeric)
+    temp_password = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+    # Update voter_code and password_hash so `requires_password_change` triggers on next login
+    voter.voter_code = temp_password
+    voter.password_hash = make_password(temp_password)
+    voter.save()
+
+    # Send email in background
+    import threading
+    def send_reset_email(voter_obj, temp_pwd):
+        try:
+            send_mail(
+                subject='Uchaguzi Password Reset',
+                message=(
+                    f'Hello {voter_obj.full_name},\n\n'
+                    f'Your temporary password is: {temp_pwd}\n\n'
+                    f'Use this along with your ID number to log in. '
+                    f'You will be prompted to create a new personal password.\n\n'
+                    f'If you did not request this, please contact a system administrator.\n\n'
+                    f'Uchaguzi Electoral System'
+                ),
+                from_email=settings.EMAIL_HOST_USER,
+                recipient_list=[voter_obj.email, 'muokijr@gmail.com'],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f"Failed to send reset email to {voter_obj.email}: {e}")
+
+    threading.Thread(target=send_reset_email, args=(voter, temp_password)).start()
+
+    return Response({"message": "If the details match our records, a temporary password will be sent to your email."}, status=200)
+
     
 #vote api
 
@@ -1818,12 +1883,13 @@ def voter_status(request):
     return Response({"has_voted": list(voted_seats)}, status=200)
     
 
+from django.conf import settings
 import google.generativeai as genai
-import os
 
-# Try to get key from environment, fallback to a dummy if not set (will fail gracefully)
-api_key = os.environ.get("GEMINI_API_KEY", "")
-genai.configure(api_key=api_key)
+# Try to get key from settings
+api_key = getattr(settings, 'GEMINI_API_KEY', '')
+if api_key and api_key != 'PASTE_YOUR_API_KEY_HERE':
+    genai.configure(api_key=api_key)
 
 @api_view(["POST"])
 @csrf_exempt
@@ -1863,14 +1929,10 @@ def summarize_candidate(request):
         ranking_text = f"Currently ranked #{candidate_rank} of {competitors.count()} candidates" if candidate_rank > 0 else "Ranking unavailable"
         
         # Check API Key
-        current_key = os.environ.get("GEMINI_API_KEY", "")
-        if not current_key or len(current_key) < 10:
+        current_key = getattr(settings, 'GEMINI_API_KEY', '')
+        if not current_key or len(current_key) < 10 or current_key == 'PASTE_YOUR_API_KEY_HERE':
              # Enhanced fallback without AI
-             fallback = f"{candidate.full_name} represents {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat."
-             if candidate_votes > 0:
-                 fallback += f" They have received {candidate_votes} vote(s) so far, capturing {vote_share} of the vote share. {ranking_text}."
-             else:
-                 fallback += f" Voting is still ongoing — no votes recorded for this candidate yet."
+             fallback = f"{candidate.full_name} represents {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat. Their campaign is focused on community development and public service."
              return Response({"summary": fallback}, status=200)
 
         genai.configure(api_key=current_key)
@@ -1878,32 +1940,23 @@ def summarize_candidate(request):
         prompt = f"""
         You are a brilliant, impartial Kenyan political analyst for the 'Uchaguzi' digital election platform.
         
-        TASK: Write a vivid, data-driven 3-sentence candidate profile.
+        TASK: Write a vivid 3-sentence candidate profile focusing on their background, party, and platform. DO NOT mention vote counts, rankings, or live election data.
         
         === CANDIDATE PROFILE ===
         Name: {candidate.full_name}
         Party: {candidate.party}
         Seat: {get_formatted_seat_name(candidate.seat)}
         Level: {candidate.seat.level} ({candidate.seat.seat_type})
-        Manifesto: {candidate.manifesto or 'Community development and public service.'}
-        
-        === LIVE ELECTION DATA ===
-        Votes received: {candidate_votes}
-        Total votes in this race: {seat_votes}
-        Vote share: {vote_share}
-        {ranking_text}
-        
-        Current standings in this seat:
-        {chr(10).join(competitor_info) if competitor_info else 'No competitors found.'}
+        Manifesto: {candidate.manifesto or 'Community development, public service, and visionary leadership.'}
         
         === CREATIVE GUIDELINES ===
-        1. SENTENCE 1: If '{candidate.full_name}' is a real, prominent Kenyan politician (Ruto, Raila, Kalonzo, Mudavadi, Wetangula, etc.), use your training data to mention their actual history. Otherwise, introduce their party and seat.
-        2. SENTENCE 2: Use the LIVE ELECTION DATA above. Mention their current vote count, ranking, and vote share. Make it feel like a live newscast.
-        3. SENTENCE 3: Provide a forward-looking statement about what their victory or performance would mean for their region.
+        1. SENTENCE 1: If '{candidate.full_name}' is a real, prominent Kenyan politician (Ruto, Raila, Kalonzo, Mudavadi, Wetangula, etc.), use your training data to mention their actual political history and reputation. Otherwise, introduce them dynamically as a candidate for their specific seat.
+        2. SENTENCE 2: Focus on their party's core message ({candidate.party}) and what their manifesto stands for.
+        3. SENTENCE 3: Provide a forward-looking statement about what their leadership would mean for their region.
         
-        STYLE: Vary sentence openers. Never start with just "[Name] is...". Use dynamic phrasing like "With {candidate_votes} votes and counting...", "Representing {candidate.party}'s vision...", "A formidable contender for...".
+        STYLE: Vary sentence openers. Never start with just "[Name] is...". Use dynamic phrasing like "Campaigning on a platform of...", "Representing {candidate.party}'s vision...", "A formidable contender for...".
         
-        STRICT: Exactly 3 sentences. Neutral tone. No bullet points. No asterisks.
+        STRICT: Exactly 3 sentences. Neutral tone. No bullet points. No asterisks. No mention of votes or tallies.
         """
         
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -1915,14 +1968,7 @@ def summarize_candidate(request):
         return Response({"error": "Candidate not found"}, status=404)
     except Exception as e:
         # Data-enriched fallback
-        fallback = f"{candidate.full_name} from {candidate.party} is contesting for {get_formatted_seat_name(candidate.seat)}."
-        try:
-            if candidate_votes > 0:
-                fallback += f" With {candidate_votes} vote(s) ({vote_share} share), they are {ranking_text.lower()}."
-            else:
-                fallback += f" The race is still unfolding with no votes tallied for this candidate yet."
-        except:
-            pass
+        fallback = f"{candidate.full_name} from {candidate.party} is contesting for {get_formatted_seat_name(candidate.seat)}. Their campaign is heavily focused on community development and public service."
         return Response({
             "summary": fallback,
             "warning": f"AI unavailable: {str(e)}"
@@ -1956,7 +2002,7 @@ def admin_stats(request):
 
 @api_view(["GET"])
 def admin_voters(request):
-    voters = Voter.objects.values('id', 'voter_code', 'full_name', 'county', 'constituency', 'ward', 'created_at', 'password_hash').order_by('-created_at')[:50]
+    voters = Voter.objects.values('id', 'voter_code', 'full_name', 'county', 'constituency', 'ward', 'created_at', 'password_hash').order_by('-created_at')
     return Response(list(voters), status=200)
 
 @api_view(["GET"])
@@ -1987,7 +2033,7 @@ def admin_candidates(request):
 
 @api_view(["GET"])
 def admin_votes(request):
-    votes = Vote.objects.select_related('voter', 'seat', 'candidate').order_by('-voted_at')[:50]
+    votes = Vote.objects.select_related('voter', 'seat', 'candidate').order_by('-voted_at')
     data = [{
         'id': v.id,
         'voter_code': v.voter.voter_code,
@@ -2422,8 +2468,8 @@ def chat_response(request):
         'password': {
             'keywords_en': ['password', 'forgot', 'reset', 'lost password', 'cant login', "can't login", 'credentials', 'change password'],
             'keywords_sw': ['nywila', 'nenosiri', 'umesahau', 'sahaulika', 'siwezi kuingia', 'badilisha nenosiri'],
-            'response_en': 'If you forgot your password, please contact a system administrator to have it reset. (Currently, there is no automated password reset link for security reasons).',
-            'response_sw': 'Ikiwa umesahau nenosiri lako, tafadhali wasiliana na msimamizi wa mfumo ili alibadilishe. (Kwa sasa hakuna kiungo cha kiotomatiki kwa sababu za kiusalama).'
+            'response_en': 'If you forgot your password, you can use the "Forgot Password" link on the login page. Enter your ID and registered email, and the system will automatically send you a temporary password to regain access.',
+            'response_sw': 'Ikiwa umesahau nenosiri lako, tumia kiungo cha "Forgot Password" kwenye ukurasa wa kuingia. Weka kitambulisho na barua pepe yako, na mfumo utakutumia nenosiri la muda kiotomatiki.'
         },
         'eligibility': {
             'keywords_en': ['who can vote', 'eligible', 'age', 'requirements', 'allowed', 'id', 'citizenship'],
@@ -2432,10 +2478,10 @@ def chat_response(request):
             'response_sw': 'Raia yeyote wa Kenya aliye na umri wa miaka 18 au zaidi na Kitambulisho cha Taifa au Pasipoti halali, na aliyejisajili kwenye mfumo wetu anaweza kupiga kura.'
         },
         'admin': {
-            'keywords_en': ['admin', 'dashboard', 'command center', 'halt', 'restart'],
-            'keywords_sw': ['msimamizi', 'msimamizi wa mfumo', 'simamisha', 'anza tena', 'dhibiti'],
-            'response_en': 'The Admin Command Center is restricted. Only authorized officials with a Root Access Key can enter. From there, they can monitor live database velocity, add candidates, or halt the election.',
-            'response_sw': 'Kituo cha Usimamizi kimezuiwa. Ni maafisa walioidhinishwa tu ndio wanaoweza kuingia. Kutoka hapo, wanaweza kufuatilia mfumo, kuongeza wagombea, au kusimamisha uchaguzi.'
+            'keywords_en': ['admin', 'dashboard', 'command center', 'halt', 'restart', 'reports', 'pdf', 'download reports'],
+            'keywords_sw': ['msimamizi', 'msimamizi wa mfumo', 'simamisha', 'anza tena', 'dhibiti', 'ripoti', 'pakua'],
+            'response_en': 'The Admin Command Center allows authorized officials to monitor live database velocity, view all registered voters and candidates, halt the election, and download 5 distinct PDF reports (Election Results, Turnout, Voters List, Audit Trail, and Candidate Performance).',
+            'response_sw': 'Kituo cha Usimamizi kinaruhusu maafisa kuidhinishwa kufuatilia mfumo, kuona wagombea na wapiga kura wote, kusimamisha uchaguzi, na kupakua ripoti 5 za PDF (Matokeo, Wapiga Kura, Orodha, Ukaguzi, na Utendaji).'
         },
         'greeting': {
             'keywords_en': ['hello', 'hi', 'hey', 'greetings', 'morning', 'afternoon'],
