@@ -209,15 +209,22 @@ def admin_report_candidate_performance(request):
 
 def admin_report_regional_analysis(request):
     from django.db.models import Count, Q, Prefetch
-    from .views import PROVINCE_TO_COUNTY, KENYA_COUNTIES, CONSTITUENCY_LOOKUP, WARD_LOOKUP, get_formatted_seat_name
+    from .views import PROVINCE_TO_COUNTY, KENYA_COUNTIES, get_formatted_seat_name
+    from .mappings import WARD_LOOKUP, CONSTITUENCY_LOOKUP
     
     province = request.GET.get('province')
     county_id = request.GET.get('county')
     constituency_id = request.GET.get('constituency')
+    ward_id = request.GET.get('ward')
     
+    # ── Build region filter (applies to ALL seats when active) ──
     region_filter = Q()
     region_title = "National"
-    if constituency_id:
+    if ward_id:
+        region_filter = Q(votes__voter__ward=ward_id)
+        ward_info = WARD_LOOKUP.get(int(ward_id))
+        region_title = (ward_info[0] if ward_info else f"Ward {ward_id}") + " Ward"
+    elif constituency_id:
         region_filter = Q(votes__voter__constituency=constituency_id)
         region_title = CONSTITUENCY_LOOKUP.get(int(constituency_id), f"Constituency {constituency_id}") + " Constituency"
     elif county_id:
@@ -228,15 +235,31 @@ def admin_report_regional_analysis(request):
         region_filter = Q(votes__voter__county__in=counties)
         region_title = f"{province} Province"
 
+    has_region_filter = bool(county_id or constituency_id or ward_id or province)
+
+    # ── Determine which seats to show ──
     seat_filter = Q(level='National')
+    if province and province in PROVINCE_TO_COUNTY:
+        counties = PROVINCE_TO_COUNTY[province]
+        seat_filter |= Q(level='County', county__in=counties)
     if county_id:
         seat_filter |= Q(level='County', county=county_id)
+        seat_filter |= Q(level='Constituency', county=county_id)
     if constituency_id:
         seat_filter |= Q(level='Constituency', constituency=constituency_id)
+        seat_filter |= Q(level='Ward', constituency=constituency_id)
+    if ward_id:
+        seat_filter |= Q(level='Ward', ward=ward_id)
 
-    candidate_qs = Candidate.objects.annotate(
-        vote_count=Count('votes', filter=region_filter)
-    ).select_related('seat')
+    # ── Annotate candidates with vote counts ──
+    if has_region_filter:
+        candidate_qs = Candidate.objects.annotate(
+            vote_count=Count('votes', filter=region_filter)
+        ).select_related('seat')
+    else:
+        candidate_qs = Candidate.objects.annotate(
+            vote_count=Count('votes')
+        ).select_related('seat')
 
     seats = Seat.objects.filter(seat_filter).prefetch_related(
         Prefetch('candidates', queryset=candidate_qs)
@@ -248,17 +271,15 @@ def admin_report_regional_analysis(request):
     styles = get_base_styles()
     
     elements.append(Paragraph(f"{region_title} - Regional Analysis Report", styles['CenterTitle']))
+    elements.append(Paragraph(f"Generated: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
     elements.append(Spacer(1, 20))
 
     data = [['Candidate', 'Party', 'Seat', 'Region Votes']]
     
-    # Process seats, grouping by seat type
     for seat in seats:
         candidates = seat.candidates.all()
-        # sort candidates by vote_count descending
         candidates = sorted(candidates, key=lambda c: getattr(c, 'vote_count', 0), reverse=True)
         for c in candidates:
-            # only list candidates if they have votes in this region, or if we want to show 0
             if getattr(c, 'vote_count', 0) >= 0:
                 seat_name = get_formatted_seat_name(seat)
                 data.append([

@@ -2395,9 +2395,10 @@ PROVINCE_TO_COUNTY = {
 @api_view(["GET"])
 def get_all_candidates_analysis(request):
     """
-    Optimized Analytics Engine:
-    Uses conditional aggregation to fetch candidate vote counts in a single efficient query.
-    Restricts scope to National + User's County/Constituency/Ward if provided.
+    Regional Analytics Engine:
+    When a region filter is active, ALL seats (including National/President)
+    only count votes from voters in that specific region.
+    When no filter is active, shows full national totals.
     """
     province = request.query_params.get('province')
     county_id = request.query_params.get('county')
@@ -2406,7 +2407,7 @@ def get_all_candidates_analysis(request):
     
     from django.db.models import Count, Q, Prefetch
 
-    # Define the filter for the Vote count aggregation based on region
+    # ── Build region filter (applies to ALL seats when active) ──
     region_filter = Q()
     if ward_id:
         region_filter = Q(votes__voter__ward=ward_id)
@@ -2418,19 +2419,33 @@ def get_all_candidates_analysis(request):
         counties = PROVINCE_TO_COUNTY[province]
         region_filter = Q(votes__voter__county__in=counties)
 
-    # Seat filter: only show seats relevant to the provided region
+    has_region_filter = bool(county_id or constituency_id or ward_id or province)
+
+    # ── Determine which seats to show ──
     seat_filter = Q(level='National')
+    if province and province in PROVINCE_TO_COUNTY:
+        counties = PROVINCE_TO_COUNTY[province]
+        seat_filter |= Q(level='County', county__in=counties)
     if county_id:
         seat_filter |= Q(level='County', county=county_id)
+        seat_filter |= Q(level='Constituency', county=county_id)
     if constituency_id:
         seat_filter |= Q(level='Constituency', constituency=constituency_id)
+        seat_filter |= Q(level='Ward', constituency=constituency_id)
     if ward_id:
         seat_filter |= Q(level='Ward', ward=ward_id)
 
-    # Fetch candidates with annotated vote counts in one go
-    candidate_qs = Candidate.objects.annotate(
-        vote_count=Count('votes', filter=region_filter)
-    ).select_related('seat')
+    # ── Annotate candidates with vote counts ──
+    if has_region_filter:
+        # Region filter active: count only votes from voters in that region
+        candidate_qs = Candidate.objects.annotate(
+            vote_count=Count('votes', filter=region_filter)
+        ).select_related('seat')
+    else:
+        # No filter: count all votes nationally
+        candidate_qs = Candidate.objects.annotate(
+            vote_count=Count('votes')
+        ).select_related('seat')
 
     seats = Seat.objects.filter(seat_filter).prefetch_related(
         Prefetch('candidates', queryset=candidate_qs)
@@ -2441,7 +2456,6 @@ def get_all_candidates_analysis(request):
         stype = seat.seat_type
         if stype not in results:
             results[stype] = []
-            
         for cand in seat.candidates.all():
             results[stype].append({
                 'seat_name': get_formatted_seat_name(seat),
