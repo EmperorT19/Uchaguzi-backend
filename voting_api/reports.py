@@ -206,3 +206,80 @@ def admin_report_candidate_performance(request):
         
     doc.build(elements)
     return response
+
+def admin_report_regional_analysis(request):
+    from django.db.models import Count, Q, Prefetch
+    from .views import PROVINCE_TO_COUNTY, KENYA_COUNTIES, CONSTITUENCY_LOOKUP, WARD_LOOKUP, get_formatted_seat_name
+    
+    province = request.GET.get('province')
+    county_id = request.GET.get('county')
+    constituency_id = request.GET.get('constituency')
+    
+    region_filter = Q()
+    region_title = "National"
+    if constituency_id:
+        region_filter = Q(votes__voter__constituency=constituency_id)
+        region_title = CONSTITUENCY_LOOKUP.get(int(constituency_id), f"Constituency {constituency_id}") + " Constituency"
+    elif county_id:
+        region_filter = Q(votes__voter__county=county_id)
+        region_title = KENYA_COUNTIES.get(int(county_id), f"County {county_id}") + " County"
+    elif province and province in PROVINCE_TO_COUNTY:
+        counties = PROVINCE_TO_COUNTY[province]
+        region_filter = Q(votes__voter__county__in=counties)
+        region_title = f"{province} Province"
+
+    seat_filter = Q(level='National')
+    if county_id:
+        seat_filter |= Q(level='County', county=county_id)
+    if constituency_id:
+        seat_filter |= Q(level='Constituency', constituency=constituency_id)
+
+    candidate_qs = Candidate.objects.annotate(
+        vote_count=Count('votes', filter=region_filter)
+    ).select_related('seat')
+
+    seats = Seat.objects.filter(seat_filter).prefetch_related(
+        Prefetch('candidates', queryset=candidate_qs)
+    )
+
+    response = _generate_pdf_response(f'Regional_Analysis_{region_title.replace(" ", "_")}')
+    doc = SimpleDocTemplate(response, pagesize=letter)
+    elements = []
+    styles = get_base_styles()
+    
+    elements.append(Paragraph(f"{region_title} - Regional Analysis Report", styles['CenterTitle']))
+    elements.append(Spacer(1, 20))
+
+    data = [['Candidate', 'Party', 'Seat', 'Region Votes']]
+    
+    # Process seats, grouping by seat type
+    for seat in seats:
+        candidates = seat.candidates.all()
+        # sort candidates by vote_count descending
+        candidates = sorted(candidates, key=lambda c: getattr(c, 'vote_count', 0), reverse=True)
+        for c in candidates:
+            # only list candidates if they have votes in this region, or if we want to show 0
+            if getattr(c, 'vote_count', 0) >= 0:
+                seat_name = get_formatted_seat_name(seat)
+                data.append([
+                    c.full_name,
+                    c.party,
+                    seat_name[:30] + "..." if len(seat_name)>30 else seat_name,
+                    str(getattr(c, 'vote_count', 0))
+                ])
+
+    if len(data) > 1:
+        t = Table(data, colWidths=[150, 100, 160, 70])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.indigo),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph(f"No votes have been cast in {region_title} yet.", styles['Normal']))
+        
+    doc.build(elements)
+    return response

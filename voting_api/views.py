@@ -1928,19 +1928,47 @@ def summarize_candidate(request):
         vote_share = f"{(candidate_votes/seat_votes*100):.1f}%" if seat_votes > 0 else "N/A (no votes cast yet)"
         ranking_text = f"Currently ranked #{candidate_rank} of {competitors.count()} candidates" if candidate_rank > 0 else "Ranking unavailable"
         
+        import random
+        
+        def generate_dynamic_fallback(cand, seat_name):
+            intros = [
+                f"{cand.full_name} is a dedicated leader representing {cand.party} in the race for the {seat_name} seat.",
+                f"Contesting for the {seat_name} position, {cand.full_name} carries the banner of {cand.party}.",
+                f"As a prominent candidate from {cand.party}, {cand.full_name} is vying to become the next {seat_name}.",
+                f"Representing a fresh vision for the {seat_name} office, {cand.full_name} is running under {cand.party}."
+            ]
+            focuses = [
+                "Their campaign is heavily focused on grassroots empowerment and sustainable economic growth.",
+                "A core pillar of their platform is transforming local infrastructure and improving public services.",
+                "They have built a strong movement around youth employment and equitable resource distribution.",
+                "Their manifesto prioritizes transparent governance, healthcare accessibility, and educational reform."
+            ]
+            demographics = [
+                "This message has resonated strongly with young voters and small business owners alike.",
+                "They have seen growing support from marginalized communities who seek a stronger voice in leadership.",
+                "Their appeal cuts across various demographics, bringing together a broad coalition of supporters.",
+                "By addressing everyday concerns, they have captured the attention of both urban and rural constituents."
+            ]
+            conclusions = [
+                "This makes the upcoming election a critical turning point for the region's future.",
+                "Observers note that their unique approach adds a highly competitive edge to this race.",
+                "The stakes are incredibly high, and their victory could signal a major shift in local politics.",
+                "As election day approaches, their campaign continues to build formidable momentum."
+            ]
+            
+            return f"{random.choice(intros)} {random.choice(focuses)} {random.choice(demographics)} {random.choice(conclusions)}"
+
         # Check API Key
         current_key = getattr(settings, 'GEMINI_API_KEY', '')
         if not current_key or len(current_key) < 10 or current_key == 'PASTE_YOUR_API_KEY_HERE':
-             # Enhanced fallback without AI
-             fallback = f"{candidate.full_name} represents {candidate.party} for the {get_formatted_seat_name(candidate.seat)} seat. Their campaign is focused on community development and public service."
-             return Response({"summary": fallback}, status=200)
+             return Response({"summary": generate_dynamic_fallback(candidate, get_formatted_seat_name(candidate.seat))}, status=200)
 
         genai.configure(api_key=current_key)
         
         prompt = f"""
         You are a brilliant, impartial Kenyan political analyst for the 'Uchaguzi' digital election platform.
         
-        TASK: Write a vivid 3-sentence candidate profile focusing on their background, party, and platform. DO NOT mention vote counts, rankings, or live election data.
+        TASK: Write a vivid 5-sentence candidate profile focusing on their background, party, and platform. DO NOT mention vote counts, rankings, or live election data.
         
         === CANDIDATE PROFILE ===
         Name: {candidate.full_name}
@@ -1953,10 +1981,12 @@ def summarize_candidate(request):
         1. SENTENCE 1: If '{candidate.full_name}' is a real, prominent Kenyan politician (Ruto, Raila, Kalonzo, Mudavadi, Wetangula, etc.), use your training data to mention their actual political history and reputation. Otherwise, introduce them dynamically as a candidate for their specific seat.
         2. SENTENCE 2: Focus on their party's core message ({candidate.party}) and what their manifesto stands for.
         3. SENTENCE 3: Provide a forward-looking statement about what their leadership would mean for their region.
+        4. SENTENCE 4: Highlight their unique appeal or connection to specific voter demographics (e.g., youth, business owners, marginalized groups) to make this profile distinctly tailored to them.
+        5. SENTENCE 5: Conclude with a strong, distinct analytical remark on the stakes of this specific race and what their potential victory signifies.
         
-        STYLE: Vary sentence openers. Never start with just "[Name] is...". Use dynamic phrasing like "Campaigning on a platform of...", "Representing {candidate.party}'s vision...", "A formidable contender for...".
+        STYLE: Vary sentence openers drastically. Never start with just "[Name] is...". Use dynamic phrasing like "Campaigning on a platform of...", "Representing {candidate.party}'s vision...", "A formidable contender for...". Ensure each sentence structure and length is different to avoid repetitive rhythm.
         
-        STRICT: Exactly 3 sentences. Neutral tone. No bullet points. No asterisks. No mention of votes or tallies.
+        STRICT: Exactly 5 sentences. Neutral tone. No bullet points. No asterisks. No mention of votes or tallies.
         """
         
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -1967,10 +1997,8 @@ def summarize_candidate(request):
     except Candidate.DoesNotExist:
         return Response({"error": "Candidate not found"}, status=404)
     except Exception as e:
-        # Data-enriched fallback
-        fallback = f"{candidate.full_name} from {candidate.party} is contesting for {get_formatted_seat_name(candidate.seat)}. Their campaign is heavily focused on community development and public service."
         return Response({
-            "summary": fallback,
+            "summary": generate_dynamic_fallback(candidate, get_formatted_seat_name(candidate.seat)),
             "warning": f"AI unavailable: {str(e)}"
         }, status=200)
 
