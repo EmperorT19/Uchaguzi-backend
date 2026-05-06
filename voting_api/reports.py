@@ -248,8 +248,19 @@ def admin_report_regional_analysis(request):
     if constituency_id:
         seat_filter |= Q(level='Constituency', constituency=constituency_id)
         seat_filter |= Q(level='Ward', constituency=constituency_id)
+        # Fetch the parent county for this constituency to include County seats
+        parent_county = Seat.objects.filter(constituency=constituency_id).exclude(county__isnull=True).values_list('county', flat=True).first()
+        if parent_county:
+            seat_filter |= Q(level='County', county=parent_county)
+            
     if ward_id:
         seat_filter |= Q(level='Ward', ward=ward_id)
+        # Fetch the parent constituency and county for this ward
+        parent_seat = Seat.objects.filter(ward=ward_id).exclude(constituency__isnull=True).first()
+        if parent_seat:
+            seat_filter |= Q(level='Constituency', constituency=parent_seat.constituency)
+            if parent_seat.county:
+                seat_filter |= Q(level='County', county=parent_seat.county)
 
     # ── Annotate candidates with vote counts ──
     if has_region_filter:
