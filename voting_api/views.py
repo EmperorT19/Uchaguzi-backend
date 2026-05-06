@@ -2571,4 +2571,48 @@ def chat_response(request):
         # Fallback - bilingual
         reply = "I'm sorry, I'm only trained to help with the Uchaguzi platform (registration, voting, results). Could you rephrase your question? / Samahani, nimefunzwa kusaidia na mfumo wa Uchaguzi tu (usajili, kupiga kura, matokeo). Unaweza kuuliza kwa njia nyingine?"
 
-    return Response({'reply': reply}, status=200)
+    return Response({'reply': reply}, status=200)
+
+@api_view(["GET"])
+def get_wards(request):
+    try:
+        constituency_id = request.query_params.get("constituency")
+        if not constituency_id:
+            return Response({"error": "constituency is required"}, status=400)
+        
+        constituency_id = int(constituency_id)
+        
+        import re
+        import os
+        
+        ts_path = r'c:\Users\Emperor\Desktop\New stuff\Chagua\Uchaguzi-Frontend\src\app\components\registration\registration.ts'
+        wards = []
+        if os.path.exists(ts_path):
+            with open(ts_path, 'r', encoding='utf-8') as f:
+                data = f.read()
+            
+            # Find the wards array
+            match = re.search(r'wards\s*=\s*signal<any>\(\[\s*(.*?)\s*\]\);', data, re.DOTALL)
+            if match:
+                wards_content = match.group(1)
+                # Parse each ward: { id: 1, name: "Port Reitz", constituencyId: 1 }
+                for ward_match in re.finditer(r"\{\s*id:\s*(\d+),\s*name:\s*(['\"])(.*?)\2,\s*constituencyId:\s*(\d+)\s*\}", wards_content):
+                    w_id = int(ward_match.group(1))
+                    w_name = ward_match.group(3)
+                    c_id = int(ward_match.group(4))
+                    
+                    if c_id == constituency_id:
+                        wards.append({
+                            "id": w_id,
+                            "name": w_name,
+                            "constituency_id": c_id
+                        })
+                        
+        if not wards:
+            # Fallback if parsing fails or no wards found
+            return Response([], status=200)
+                
+        return Response(wards, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+

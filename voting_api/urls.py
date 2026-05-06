@@ -39,4 +39,5 @@ urlpatterns = [
     path("system-admin/reports/audit-trail", admin_report_audit_trail),
     path("system-admin/reports/candidate-performance", admin_report_candidate_performance),
     path("system-admin/reports/regional-analysis", admin_report_regional_analysis),
+    path("wards/", get_wards),
 ]
